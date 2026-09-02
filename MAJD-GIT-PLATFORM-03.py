@@ -109,6 +109,9 @@ footer{text-align:center;color:#66738c;padding:20px}
 <div class="card"><div class="label">الخدمة التلقائية</div><div id="service" class="value">...</div></div>
 <div class="card"><div class="label">المنصة الحالية</div><div id="current" class="value">...</div></div>
 <div class="card"><div class="label">الإطلاق العام</div><div class="value wait">بأمر المالك فقط</div></div>
+<div class="card"><div class="label">عدد المنصات</div><div id="repoCount" class="value">...</div></div>
+<div class="card"><div class="label">Git نظيف</div><div id="cleanCount" class="value">...</div></div>
+<div class="card"><div class="label">AI مؤجل</div><div id="deferredCount" class="value">...</div></div>
 </div>
 <div id="repos" class="grid"></div>
 </main>
@@ -122,6 +125,11 @@ async function refresh(){
   s.textContent=d.service;
   s.className='value '+(d.service==='active'?'active':'wait');
   document.getElementById('current').textContent=d.last_repository||'—';
+  const repoEntries=Object.entries(d.repositories||{});
+  const gitEntries=Object.values(d.git||{});
+  document.getElementById('repoCount').textContent=repoEntries.length;
+  document.getElementById('cleanCount').textContent=gitEntries.filter(g=>!g.dirty&&!g.error).length;
+  document.getElementById('deferredCount').textContent=repoEntries.filter(([_,x])=>x.state==='AI_DEFERRED').length;
   const repos=document.getElementById('repos');
   repos.innerHTML='';
   Object.entries(d.repositories||{}).forEach(([name,x])=>{
