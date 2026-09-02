@@ -23,6 +23,58 @@ def service_state():
     except Exception:
         return "unknown"
 
+
+def owner_jobs():
+    result = {}
+    jobs_dir = ROOT / ".majd" / "owner-jobs"
+
+    if not jobs_dir.exists():
+        return result
+
+    names = set()
+
+    for x in jobs_dir.glob("*.log"):
+        names.add(x.stem)
+
+    for x in jobs_dir.glob("*.json"):
+        names.add(x.stem)
+
+    for name in sorted(names):
+        log_path = jobs_dir / f"{name}.log"
+        meta_path = jobs_dir / f"{name}.json"
+
+        pid = None
+        started_at = None
+
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                pid = int(meta["pid"]) if meta.get("pid") else None
+                started_at = meta.get("started_at")
+            except Exception:
+                pass
+
+        running = bool(pid and Path(f"/proc/{pid}").exists())
+
+        try:
+            raw = log_path.read_text(
+                encoding="utf-8",
+                errors="replace"
+            ) if log_path.exists() else ""
+            tail = raw[-1200:].strip()
+        except Exception:
+            tail = ""
+
+        result[name] = {
+            "status": "RUNNING" if running else "FINISHED",
+            "pid": pid,
+            "started_at": started_at,
+            "result": tail
+        }
+
+    return result
+
+
 def git_repositories():
     result = {}
     managed = ROOT / "managed"
@@ -208,6 +260,19 @@ class Handler(BaseHTTPRequestHandler):
                             start_new_session=True
                         )
 
+                    
+                    meta_path = log_dir / f"{name}.json"
+                    meta_path.write_text(
+                        json.dumps({
+                            "pid": proc.pid,
+                            "repository": name,
+                            "started_at": __import__("datetime").datetime.now(
+                                __import__("datetime").timezone.utc
+                            ).isoformat()
+                        }, ensure_ascii=False),
+                        encoding="utf-8"
+                    )
+
                     payload = {
                         "ok": True,
                         "repository": name,
@@ -256,7 +321,8 @@ class Handler(BaseHTTPRequestHandler):
                 "public_release": "BLOCKED_UNTIL_OWNER_RELEASE",
                 "last_repository": scheduler.get("last_repository"),
                 "repositories": state,
-                "git": git_repositories()
+                "git": git_repositories(),
+                "jobs": owner_jobs()
             }, ensure_ascii=False).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -342,9 +408,30 @@ async function refresh(){
      '<button onclick="ownerRepo(\''+name+'\',\'sync\')">مزامنة آمنة</button> '+
      '<button onclick="ownerRepo(\''+name+'\',\'develop\')">تشغيل دورة تطوير</button>'+
      '</div>'+
+     '<small id="jobStatus-'+name+'" style="display:block;margin-top:8px"></small>'+
+     '<small id="jobResult-'+name+'" style="display:block;margin-top:6px;white-space:pre-wrap"></small>'+
      '<small id="repoResult-'+name+'" style="display:block;margin-top:8px"></small>'+
      '<small>آخر تحديث: <span dir="ltr">'+(x.updated_at ? new Date(x.updated_at).toLocaleString('ar-SA') : '—')+'</span></small>';
    repos.appendChild(el);
+
+   const job=(d.jobs||{})[name];
+   if(job){
+     const statusEl=document.getElementById('jobStatus-'+name);
+     const resultEl=document.getElementById('jobResult-'+name);
+
+     if(statusEl){
+       statusEl.textContent =
+         job.status==='RUNNING'
+         ? 'دورة التطوير: تعمل الآن'
+         : 'دورة التطوير: انتهت';
+     }
+
+     if(resultEl && job.result){
+       let txt=job.result;
+       if(txt.length>500) txt=txt.slice(-500);
+       resultEl.textContent='آخر نتيجة: '+txt;
+     }
+   }
   });
  }catch(e){}
 }
