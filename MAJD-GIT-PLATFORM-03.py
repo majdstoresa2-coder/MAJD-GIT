@@ -190,25 +190,30 @@ class Handler(BaseHTTPRequestHandler):
                         "verify the result, protect OWNER_ROOT and secrets, and do not release publicly."
                     )
 
-                    cp = subprocess.run(
-                        [
-                            "/usr/bin/python3",
-                            str(ROOT / "MAJD-AI-MASTERMIND-01.py"),
-                            "objective",
-                            objective
-                        ],
-                        cwd=str(ROOT),
-                        capture_output=True,
-                        text=True,
-                        timeout=180
-                    )
+                    log_dir = ROOT / ".majd" / "owner-jobs"
+                    log_dir.mkdir(parents=True, exist_ok=True)
+                    log_path = log_dir / f"{name}.log"
+
+                    with open(log_path, "ab") as log:
+                        proc = subprocess.Popen(
+                            [
+                                "/usr/bin/python3",
+                                str(ROOT / "MAJD-AI-MASTERMIND-01.py"),
+                                "evolve",
+                                objective
+                            ],
+                            cwd=str(ROOT),
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                            start_new_session=True
+                        )
 
                     payload = {
-                        "ok": cp.returncode == 0,
+                        "ok": True,
                         "repository": name,
                         "action": "develop",
-                        "returncode": cp.returncode,
-                        "result": (cp.stdout or cp.stderr)[-1500:],
+                        "status": "STARTED",
+                        "pid": proc.pid,
                         "public_release": "BLOCKED_UNTIL_OWNER_RELEASE"
                     }
 
@@ -401,7 +406,7 @@ async function ownerRepo(name,action){
     }else if(action==='sync'){
       out.textContent='تمت المزامنة — '+d.head;
     }else if(action==='develop'){
-      out.textContent=d.ok ? 'انتهت دورة التطوير المحدودة' : 'فشلت دورة التطوير';
+      out.textContent=d.ok ? 'بدأت دورة التطوير في الخلفية' : 'فشلت بداية دورة التطوير';
     }
 
     setTimeout(load,800);
