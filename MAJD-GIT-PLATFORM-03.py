@@ -92,7 +92,7 @@ async function refresh(){
    const el=document.createElement('div');
    el.className='repo';
    el.innerHTML='<h3>'+name+'</h3><div class="label">الحالة</div><div class="state">'+
-     (x.state||'WAITING')+'</div><small>آخر تحديث: '+(x.updated_at||'—')+'</small>';
+     (x.state||'WAITING')+'</div><small>آخر تحديث: <span dir="ltr">'+(x.updated_at ? new Date(x.updated_at).toLocaleString('ar-SA') : '—')+'</span></small>';
    repos.appendChild(el);
   });
  }catch(e){}
