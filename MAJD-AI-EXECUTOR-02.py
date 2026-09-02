@@ -5,58 +5,38 @@
 MAJD-GIT
 MAJD-AI-EXECUTOR-02.py
 ============================================================
-SOVEREIGN AUTONOMOUS AI EXECUTOR
+SOVEREIGN AUTONOMOUS EXECUTOR
 
 FILE 02
-REAL GIT + BOUNDED AI + AUTOMATION EXECUTION ENGINE
+REAL GIT + DETERMINISTIC AUTOMATION + OPTIONAL BOUNDED AI
 
-VERSION: 5.0.0
+VERSION: 6.0.0
 
-============================================================
-ABSOLUTE DESIGN
-============================================================
+ARCHITECTURE:
+    OWNER
+      -> MAJD-AI-MASTERMIND-01.py
+      -> MAJD-AI-EXECUTOR-02.py
+      -> GIT / INSPECTION / TEST / SECURITY
+      -> OPTIONAL BOUNDED AI
+      -> APPLY
+      -> VERIFY
+      -> ROLLBACK ON FAILURE
+      -> SAVE PLATFORM STATE
+      -> WAITING_FOR_OWNER_RELEASE
 
-OWNER
-    -> MAJD-AI-MASTERMIND-01.py
-    -> MAJD-AI-EXECUTOR-02.py
-    -> REAL GIT OPERATIONS
-    -> BOUNDED AI REASONING
-    -> APPLY
-    -> VERIFY
-    -> REPAIR / ROLLBACK
-    -> CONTINUE
-
-OWNER AUTHORITY:
-    SUPREME_OWNER
-
-THE AI IS NEVER OWNER.
-
-02 MAY:
-    - discover repositories
-    - import repositories
-    - mirror repositories
-    - inspect repositories
-    - select relevant code
-    - call local AI
-    - create bounded changes
-    - verify changes
-    - rollback failures
-    - continue autonomous work
-
-02 MAY NOT:
-    - grant itself OWNER
-    - expose secrets
-    - leave MAJD-GIT managed workspace
-    - fake success
-    - public-launch platforms
-    - publish publicly without OWNER release
-
-IMPORTANT:
-    Git handles Git.
-    Python handles deterministic inspection/tests.
-    AI handles only reasoning/code work that actually needs AI.
-
-NO FULL REPOSITORY DUMPS TO OLLAMA.
+RULES:
+    - OWNER is SUPREME_OWNER.
+    - AI is never OWNER.
+    - Public release is impossible from this executor.
+    - Git operations are deterministic.
+    - AI is optional and must never block the autonomous cycle indefinitely.
+    - No repository dumps to AI.
+    - One bounded AI request maximum per evolve cycle.
+    - A timed-out AI request becomes AI_DEFERRED, not a frozen executor.
+    - Repositories are scheduled persistently instead of always selecting
+      the first alphabetical repository.
+    - Verified local work is preserved.
+    - Production readiness is never claimed from syntax checks alone.
 """
 
 from __future__ import annotations
@@ -87,10 +67,10 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 SYSTEM_NAME = "MAJD-GIT"
 EXECUTOR_NAME = "MAJD-SOVEREIGN-AI-EXECUTOR"
-VERSION = "5.0.0"
+VERSION = "6.0.0"
 
 OWNER_ROLE = "SUPREME_OWNER"
-AI_ROLE = "AUTONOMOUS_EXECUTOR"
+AI_ROLE = "BOUNDED_AUTONOMOUS_EXECUTOR"
 
 ROOT = Path(__file__).resolve().parent
 
@@ -103,6 +83,8 @@ LOCK_DIR = STATE_DIR / "locks"
 
 SOURCES_FILE = STATE_DIR / "sources.json"
 LAST_RUN_FILE = STATE_DIR / "last-run.json"
+PLATFORM_STATE_FILE = STATE_DIR / "platform-state.json"
+SCHEDULER_FILE = STATE_DIR / "scheduler.json"
 
 for directory in (
     STATE_DIR,
@@ -116,8 +98,21 @@ for directory in (
 
 
 # ============================================================
-# CONFIG
+# HARD EXECUTION LIMITS
 # ============================================================
+
+def env_int(
+    name: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except Exception:
+        value = default
+    return max(minimum, min(maximum, value))
+
 
 AI_BASE_URL = os.getenv(
     "MAJD_AI_BASE_URL",
@@ -126,66 +121,72 @@ AI_BASE_URL = os.getenv(
 
 AI_MODEL = os.getenv(
     "MAJD_AI_MODEL",
-    "llama3.2:3b",
-).strip()
+    "llama3.2:1b",
+).strip() or "llama3.2:1b"
 
-AI_TIMEOUT = max(
-    30,
-    min(
-        240,
-        int(os.getenv("MAJD_AI_TIMEOUT", "120")),
-    ),
+#
+# HARD CAP.
+# Even if /etc/profile exports MAJD_AI_TIMEOUT=600,
+# this executor will NEVER wait more than 45 seconds.
+#
+AI_TIMEOUT = env_int(
+    "MAJD_AI_TIMEOUT",
+    35,
+    10,
+    45,
 )
 
-AI_NUM_CTX = max(
+AI_NUM_CTX = env_int(
+    "MAJD_AI_NUM_CTX",
     1024,
-    min(
-        4096,
-        int(os.getenv("MAJD_AI_NUM_CTX", "2048")),
-    ),
+    512,
+    1536,
 )
 
-AI_NUM_PREDICT = max(
+AI_NUM_PREDICT = env_int(
+    "MAJD_AI_NUM_PREDICT",
     128,
-    min(
-        1024,
-        int(os.getenv("MAJD_AI_NUM_PREDICT", "512")),
-    ),
+    64,
+    192,
+)
+
+MAX_PROMPT_CHARS = env_int(
+    "MAJD_AI_MAX_PROMPT_CHARS",
+    2200,
+    1200,
+    2600,
+)
+
+MAX_CONTEXT_FILES = env_int(
+    "MAJD_AI_MAX_CONTEXT_FILES",
+    2,
+    1,
+    2,
+)
+
+MAX_FILE_CONTEXT_CHARS = env_int(
+    "MAJD_AI_MAX_FILE_CHARS",
+    650,
+    300,
+    800,
 )
 
 AI_KEEP_ALIVE = os.getenv(
     "MAJD_AI_KEEP_ALIVE",
-    "30m",
-)
-
-MAX_PROMPT_CHARS = max(
-    2500,
-    min(
-        9000,
-        int(os.getenv("MAJD_AI_MAX_PROMPT_CHARS", "5200")),
-    ),
-)
-
-MAX_CONTEXT_FILES = max(
-    1,
-    min(
-        5,
-        int(os.getenv("MAJD_AI_MAX_CONTEXT_FILES", "3")),
-    ),
-)
-
-MAX_FILE_CONTEXT_CHARS = max(
-    500,
-    min(
-        3000,
-        int(os.getenv("MAJD_AI_MAX_FILE_CHARS", "1400")),
-    ),
+    "5m",
 )
 
 GITHUB_OWNER = os.getenv(
     "MAJD_GITHUB_OWNER",
     "majdstoresa2-coder",
 ).strip()
+
+MAX_PROJECT_TEST_SECONDS = env_int(
+    "MAJD_PROJECT_TEST_TIMEOUT",
+    45,
+    10,
+    60,
+)
 
 
 # ============================================================
@@ -205,12 +206,15 @@ IGNORE_DIRS = {
     "coverage",
     ".pytest_cache",
     ".mypy_cache",
+    ".tox",
 }
 
 TEXT_SUFFIXES = {
     ".py",
     ".js",
     ".jsx",
+    ".mjs",
+    ".cjs",
     ".ts",
     ".tsx",
     ".json",
@@ -230,15 +234,12 @@ CODE_SUFFIXES = {
     ".py",
     ".js",
     ".jsx",
+    ".mjs",
+    ".cjs",
     ".ts",
     ".tsx",
     ".sh",
 }
-
-
-# ============================================================
-# SECURITY
-# ============================================================
 
 ALLOWED_GIT_HOSTS = {
     "github.com",
@@ -249,10 +250,8 @@ ALLOWED_GIT_HOSTS = {
 }
 
 SECRET_KEY_PATTERN = re.compile(
-    r"(?i)"
-    r"(password|passwd|secret|token|"
-    r"api[_-]?key|private[_-]?key|"
-    r"authorization|cookie)"
+    r"(?i)(password|passwd|secret|token|api[_-]?key|"
+    r"private[_-]?key|authorization|cookie)"
 )
 
 SECRET_VALUE_PATTERN = re.compile(
@@ -274,16 +273,13 @@ WORD_PATTERN = re.compile(
 # ============================================================
 
 def utc_now() -> str:
-    return datetime.now(
-        timezone.utc
-    ).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def atomic_json(
     path: Path,
     data: Any,
 ) -> None:
-
     path.parent.mkdir(
         parents=True,
         exist_ok=True,
@@ -310,7 +306,6 @@ def read_json(
     path: Path,
     default: Any,
 ) -> Any:
-
     try:
         return json.loads(
             path.read_text(
@@ -325,14 +320,13 @@ def truncate(
     value: Any,
     limit: int = 3000,
 ) -> str:
-
     text = str(value or "")
 
     if len(text) <= limit:
         return text
 
     return (
-        text[: limit - 40]
+        text[: max(0, limit - 40)]
         + "\n...[TRUNCATED]..."
     )
 
@@ -340,15 +334,11 @@ def truncate(
 def sha256_file(
     path: Path,
 ) -> str:
-
     digest = hashlib.sha256()
 
-    with path.open("rb") as file_handle:
-
+    with path.open("rb") as handle:
         for chunk in iter(
-            lambda: file_handle.read(
-                1024 * 1024
-            ),
+            lambda: handle.read(1024 * 1024),
             b"",
         ):
             digest.update(chunk)
@@ -359,16 +349,11 @@ def sha256_file(
 def redact(
     value: Any,
 ) -> Any:
-
     if isinstance(value, dict):
-
         output = {}
 
         for key, item in value.items():
-
-            if SECRET_KEY_PATTERN.search(
-                str(key)
-            ):
+            if SECRET_KEY_PATTERN.search(str(key)):
                 output[key] = "[REDACTED]"
             else:
                 output[key] = redact(item)
@@ -376,21 +361,12 @@ def redact(
         return output
 
     if isinstance(value, list):
-
-        return [
-            redact(item)
-            for item in value
-        ]
+        return [redact(item) for item in value]
 
     if isinstance(value, tuple):
-
-        return tuple(
-            redact(item)
-            for item in value
-        )
+        return tuple(redact(item) for item in value)
 
     if isinstance(value, str):
-
         return SECRET_VALUE_PATTERN.sub(
             "[REDACTED]",
             value,
@@ -403,7 +379,6 @@ def safe_under(
     root: Path,
     value: Path | str,
 ) -> Path:
-
     path = Path(value)
 
     if not path.is_absolute():
@@ -412,9 +387,7 @@ def safe_under(
     path = path.resolve()
 
     try:
-        path.relative_to(
-            root.resolve()
-        )
+        path.relative_to(root.resolve())
     except Exception as exc:
         raise PermissionError(
             f"Path outside allowed root: {path}"
@@ -427,7 +400,6 @@ def safe_repo_path(
     repo: Path,
     relative_path: str,
 ) -> Path:
-
     if not relative_path:
         raise ValueError(
             "Empty repository path"
@@ -461,7 +433,6 @@ def safe_repo_path(
 def objective_terms(
     objective: str,
 ) -> List[str]:
-
     stop_words = {
         "the",
         "and",
@@ -475,6 +446,8 @@ def objective_terms(
         "continue",
         "autonomous",
         "development",
+        "production",
+        "ready",
         "majd",
         "git",
         "platform",
@@ -495,10 +468,7 @@ def objective_terms(
     for raw in WORD_PATTERN.findall(
         objective.lower()
     ):
-
-        token = raw.strip(
-            "./-_"
-        )
+        token = raw.strip("./-_")
 
         if (
             len(token) >= 3
@@ -511,79 +481,26 @@ def objective_terms(
 
 
 # ============================================================
-# COMMAND RESULT
+# COMMAND EXECUTION
 # ============================================================
 
 @dataclass
 class CommandResult:
-
     argv: List[str]
     cwd: str
-
     returncode: int
-
     stdout: str
     stderr: str
-
     duration_seconds: float
-
     timed_out: bool = False
 
     @property
     def success(self) -> bool:
-
         return (
             self.returncode == 0
             and not self.timed_out
         )
 
-
-# ============================================================
-# AUDIT
-# ============================================================
-
-class AuditLogger:
-
-    def __init__(
-        self,
-        run_id: str,
-    ):
-
-        self.path = (
-            LOG_DIR
-            / f"{run_id}.jsonl"
-        )
-
-    def log(
-        self,
-        event: str,
-        **data: Any,
-    ) -> None:
-
-        record = {
-            "time": utc_now(),
-            "event": event,
-            **redact(data),
-        }
-
-        with self.path.open(
-            "a",
-            encoding="utf-8",
-        ) as file_handle:
-
-            file_handle.write(
-                json.dumps(
-                    record,
-                    ensure_ascii=False,
-                    default=str,
-                )
-                + "\n"
-            )
-
-
-# ============================================================
-# PROCESS EXECUTOR
-# ============================================================
 
 class ProcessExecutor:
 
@@ -591,9 +508,8 @@ class ProcessExecutor:
         self,
         argv: Sequence[str],
         cwd: Path,
-        timeout: int = 120,
+        timeout: int = 60,
     ) -> CommandResult:
-
         if not argv:
             raise ValueError(
                 "Empty command"
@@ -602,7 +518,6 @@ class ProcessExecutor:
         started = time.monotonic()
 
         try:
-
             completed = subprocess.run(
                 list(argv),
                 cwd=str(cwd),
@@ -619,61 +534,99 @@ class ProcessExecutor:
                 returncode=completed.returncode,
                 stdout=completed.stdout or "",
                 stderr=completed.stderr or "",
-                duration_seconds=(
-                    time.monotonic()
-                    - started
+                duration_seconds=round(
+                    time.monotonic() - started,
+                    3,
                 ),
             )
 
         except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout
+            stderr = exc.stderr
+
+            if isinstance(stdout, bytes):
+                stdout = stdout.decode(
+                    "utf-8",
+                    "replace",
+                )
+
+            if isinstance(stderr, bytes):
+                stderr = stderr.decode(
+                    "utf-8",
+                    "replace",
+                )
 
             return CommandResult(
                 argv=list(argv),
                 cwd=str(cwd),
                 returncode=124,
-                stdout=(
-                    exc.stdout
-                    if isinstance(
-                        exc.stdout,
-                        str,
-                    )
-                    else ""
-                ),
-                stderr=(
-                    exc.stderr
-                    if isinstance(
-                        exc.stderr,
-                        str,
-                    )
-                    else "Command timed out"
-                ),
-                duration_seconds=(
-                    time.monotonic()
-                    - started
+                stdout=stdout or "",
+                stderr=stderr or "Command timed out",
+                duration_seconds=round(
+                    time.monotonic() - started,
+                    3,
                 ),
                 timed_out=True,
             )
 
         except Exception as exc:
-
             return CommandResult(
                 argv=list(argv),
                 cwd=str(cwd),
                 returncode=1,
                 stdout="",
                 stderr=(
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
+                    f"{type(exc).__name__}: {exc}"
                 ),
-                duration_seconds=(
-                    time.monotonic()
-                    - started
+                duration_seconds=round(
+                    time.monotonic() - started,
+                    3,
                 ),
             )
 
 
 # ============================================================
-# SINGLE CYCLE LOCK
+# AUDIT
+# ============================================================
+
+class AuditLogger:
+
+    def __init__(
+        self,
+        run_id: str,
+    ):
+        self.path = (
+            LOG_DIR
+            / f"{run_id}.jsonl"
+        )
+
+    def log(
+        self,
+        event: str,
+        **data: Any,
+    ) -> None:
+        record = {
+            "time": utc_now(),
+            "event": event,
+            **redact(data),
+        }
+
+        with self.path.open(
+            "a",
+            encoding="utf-8",
+        ) as handle:
+            handle.write(
+                json.dumps(
+                    record,
+                    ensure_ascii=False,
+                    default=str,
+                )
+                + "\n"
+            )
+
+
+# ============================================================
+# LOCK
 # ============================================================
 
 class ExecutionLock:
@@ -682,20 +635,16 @@ class ExecutionLock:
         self,
         name: str = "evolve",
     ):
-
         self.path = (
             LOCK_DIR
             / f"{name}.lock"
         )
-
         self.fd: Optional[int] = None
 
     def __enter__(
         self,
     ) -> "ExecutionLock":
-
         try:
-
             self.fd = os.open(
                 str(self.path),
                 os.O_CREAT
@@ -709,21 +658,17 @@ class ExecutionLock:
                 (
                     f"{os.getpid()} "
                     f"{utc_now()}\n"
-                ).encode(),
+                ).encode()
             )
 
             return self
 
         except FileExistsError:
-
             try:
-
                 content = (
-                    self.path
-                    .read_text(
+                    self.path.read_text(
                         encoding="utf-8"
-                    )
-                    .split()
+                    ).split()
                 )
 
                 pid = (
@@ -732,40 +677,30 @@ class ExecutionLock:
                     else 0
                 )
 
-                os.kill(
-                    pid,
-                    0,
-                )
+                os.kill(pid, 0)
 
                 raise RuntimeError(
                     "Another autonomous cycle "
-                    f"is already running "
-                    f"(pid={pid})"
+                    f"is already running (pid={pid})"
                 )
 
             except ProcessLookupError:
-
                 self.path.unlink(
                     missing_ok=True
                 )
-
                 return self.__enter__()
 
-            except ValueError:
-
+            except (ValueError, PermissionError):
                 self.path.unlink(
                     missing_ok=True
                 )
-
                 return self.__enter__()
 
     def __exit__(
         self,
         *_: Any,
     ) -> None:
-
         if self.fd is not None:
-
             with contextlib.suppress(
                 Exception
             ):
@@ -773,6 +708,69 @@ class ExecutionLock:
 
         self.path.unlink(
             missing_ok=True
+        )
+
+
+# ============================================================
+# PLATFORM STATE
+# ============================================================
+
+class PlatformState:
+
+    def load(
+        self,
+    ) -> Dict[str, Any]:
+        data = read_json(
+            PLATFORM_STATE_FILE,
+            {},
+        )
+
+        return (
+            data
+            if isinstance(data, dict)
+            else {}
+        )
+
+    def get(
+        self,
+        repository: str,
+    ) -> Dict[str, Any]:
+        data = self.load()
+
+        value = data.get(
+            repository,
+            {},
+        )
+
+        return (
+            value
+            if isinstance(value, dict)
+            else {}
+        )
+
+    def update(
+        self,
+        repository: str,
+        **values: Any,
+    ) -> None:
+        data = self.load()
+
+        current = data.get(
+            repository,
+            {},
+        )
+
+        if not isinstance(current, dict):
+            current = {}
+
+        current.update(values)
+        current["updated_at"] = utc_now()
+
+        data[repository] = current
+
+        atomic_json(
+            PLATFORM_STATE_FILE,
+            data,
         )
 
 
@@ -787,15 +785,36 @@ class GitWorkspace:
         runner: ProcessExecutor,
         audit: AuditLogger,
     ):
-
         self.runner = runner
         self.audit = audit
+
+    @staticmethod
+    def verify_host(
+        host: str,
+    ) -> None:
+        if host in ALLOWED_GIT_HOSTS:
+            return
+
+        extra_hosts = {
+            item.strip().lower()
+            for item in os.getenv(
+                "MAJD_ALLOWED_GIT_HOSTS",
+                "",
+            ).split(",")
+            if item.strip()
+        }
+
+        if host in extra_hosts:
+            return
+
+        raise PermissionError(
+            f"Git host not allowed: {host}"
+        )
 
     @staticmethod
     def normalize_url(
         url: str,
     ) -> str:
-
         url = url.strip()
 
         if not url:
@@ -803,16 +822,10 @@ class GitWorkspace:
                 "Empty Git URL"
             )
 
-        #
-        # SSH scp style:
-        # git@github.com:owner/repo.git
-        #
-
         if re.match(
             r"^[\w.-]+@[\w.-]+:.+",
             url,
         ):
-
             host = (
                 url.split("@", 1)[1]
                 .split(":", 1)[0]
@@ -855,35 +868,9 @@ class GitWorkspace:
         return url
 
     @staticmethod
-    def verify_host(
-        host: str,
-    ) -> None:
-
-        if host in ALLOWED_GIT_HOSTS:
-            return
-
-        extra_hosts = {
-            item.strip().lower()
-            for item
-            in os.getenv(
-                "MAJD_ALLOWED_GIT_HOSTS",
-                "",
-            ).split(",")
-            if item.strip()
-        }
-
-        if host in extra_hosts:
-            return
-
-        raise PermissionError(
-            f"Git host not allowed: {host}"
-        )
-
-    @staticmethod
     def repository_name(
         url: str,
     ) -> str:
-
         value = (
             url.rstrip("/")
             .rsplit("/", 1)[-1]
@@ -913,29 +900,24 @@ class GitWorkspace:
     def managed_repositories(
         self,
     ) -> List[Path]:
-
-        repositories = []
-
         if not MANAGED_DIR.exists():
-            return repositories
+            return []
 
-        for path in sorted(
-            MANAGED_DIR.iterdir()
-        ):
-
+        return [
+            path
+            for path in sorted(
+                MANAGED_DIR.iterdir()
+            )
             if (
                 path.is_dir()
                 and (path / ".git").exists()
-            ):
-                repositories.append(path)
-
-        return repositories
+            )
+        ]
 
     def import_repository(
         self,
         url: str,
     ) -> Dict[str, Any]:
-
         url = self.normalize_url(
             url
         )
@@ -944,17 +926,10 @@ class GitWorkspace:
             url
         )
 
-        #
-        # Never import MAJD-GIT into itself.
-        #
-
         if name.lower() == "majd-git":
-
             return {
                 "success": True,
-                "status": (
-                    "CURRENT_REPOSITORY_SKIPPED"
-                ),
+                "status": "CURRENT_REPOSITORY_SKIPPED",
                 "repository": name,
             }
 
@@ -968,12 +943,7 @@ class GitWorkspace:
             MANAGED_DIR / name,
         )
 
-        #
-        # Mirror preserves source Git refs/history.
-        #
-
         if not mirror_path.exists():
-
             result = self.runner.run(
                 [
                     "git",
@@ -983,7 +953,7 @@ class GitWorkspace:
                     str(mirror_path),
                 ],
                 cwd=ROOT,
-                timeout=300,
+                timeout=60,
             )
 
             self.audit.log(
@@ -993,12 +963,9 @@ class GitWorkspace:
             )
 
             if not result.success:
-
                 return {
                     "success": False,
-                    "status": (
-                        "GIT_MIRROR_CLONE_FAILED"
-                    ),
+                    "status": "GIT_MIRROR_CLONE_FAILED",
                     "repository": name,
                     "error": truncate(
                         result.stderr
@@ -1006,7 +973,6 @@ class GitWorkspace:
                 }
 
         else:
-
             result = self.runner.run(
                 [
                     "git",
@@ -1015,7 +981,7 @@ class GitWorkspace:
                     "--prune",
                 ],
                 cwd=mirror_path,
-                timeout=240,
+                timeout=60,
             )
 
             self.audit.log(
@@ -1025,24 +991,16 @@ class GitWorkspace:
             )
 
             if not result.success:
-
                 return {
                     "success": False,
-                    "status": (
-                        "GIT_MIRROR_UPDATE_FAILED"
-                    ),
+                    "status": "GIT_MIRROR_UPDATE_FAILED",
                     "repository": name,
                     "error": truncate(
                         result.stderr
                     ),
                 }
 
-        #
-        # Working copy for AI/build/testing.
-        #
-
         if not work_path.exists():
-
             result = self.runner.run(
                 [
                     "git",
@@ -1051,25 +1009,18 @@ class GitWorkspace:
                     str(work_path),
                 ],
                 cwd=ROOT,
-                timeout=300,
+                timeout=60,
             )
 
             if not result.success:
-
                 return {
                     "success": False,
-                    "status": (
-                        "GIT_WORKTREE_CLONE_FAILED"
-                    ),
+                    "status": "GIT_WORKTREE_CLONE_FAILED",
                     "repository": name,
                     "error": truncate(
                         result.stderr
                     ),
                 }
-
-            #
-            # origin = actual external repository
-            #
 
             self.runner.run(
                 [
@@ -1080,24 +1031,34 @@ class GitWorkspace:
                     url,
                 ],
                 cwd=work_path,
-                timeout=30,
+                timeout=15,
             )
 
-            #
-            # local preserved mirror also available
-            #
-
-            self.runner.run(
+            remotes = self.runner.run(
                 [
                     "git",
                     "remote",
-                    "add",
-                    "majd-mirror",
-                    str(mirror_path),
                 ],
                 cwd=work_path,
-                timeout=30,
+                timeout=10,
             )
+
+            if (
+                remotes.success
+                and "majd-mirror"
+                not in remotes.stdout.split()
+            ):
+                self.runner.run(
+                    [
+                        "git",
+                        "remote",
+                        "add",
+                        "majd-mirror",
+                        str(mirror_path),
+                    ],
+                    cwd=work_path,
+                    timeout=15,
+                )
 
         return {
             "success": True,
@@ -1111,7 +1072,6 @@ class GitWorkspace:
         self,
         repo: Path,
     ) -> Dict[str, Any]:
-
         status = self.runner.run(
             [
                 "git",
@@ -1119,29 +1079,19 @@ class GitWorkspace:
                 "--porcelain",
             ],
             cwd=repo,
-            timeout=20,
+            timeout=15,
         )
 
         if not status.success:
-
             return {
                 "success": False,
-                "status": (
-                    "INVALID_GIT_REPOSITORY"
-                ),
+                "status": "INVALID_GIT_REPOSITORY",
             }
 
-        #
-        # Never destroy autonomous local work.
-        #
-
         if status.stdout.strip():
-
             return {
                 "success": True,
-                "status": (
-                    "LOCAL_CHANGES_PRESERVED"
-                ),
+                "status": "LOCAL_CHANGES_PRESERVED",
                 "dirty": True,
             }
 
@@ -1154,7 +1104,7 @@ class GitWorkspace:
                 "--tags",
             ],
             cwd=repo,
-            timeout=180,
+            timeout=45,
         )
 
         self.audit.log(
@@ -1177,7 +1127,7 @@ class GitWorkspace:
 
 
 # ============================================================
-# SOURCE REGISTRY
+# SOURCES
 # ============================================================
 
 class SourceRegistry:
@@ -1185,7 +1135,6 @@ class SourceRegistry:
     def configured(
         self,
     ) -> List[str]:
-
         result: List[str] = []
 
         data = read_json(
@@ -1194,36 +1143,29 @@ class SourceRegistry:
         )
 
         if isinstance(data, dict):
-
             for item in data.get(
                 "repositories",
                 [],
             ):
-
-                if isinstance(item, dict):
-                    url = item.get("url")
-                else:
-                    url = item
+                url = (
+                    item.get("url")
+                    if isinstance(item, dict)
+                    else item
+                )
 
                 if (
                     isinstance(url, str)
                     and url.strip()
-                    and url.strip()
-                    not in result
+                    and url.strip() not in result
                 ):
                     result.append(
                         url.strip()
                     )
 
-        #
-        # Optional environment repository list.
-        #
-
         for item in os.getenv(
             "MAJD_SOURCE_REPOS",
             "",
         ).split(","):
-
             url = item.strip()
 
             if (
@@ -1238,11 +1180,9 @@ class SourceRegistry:
         self,
         urls: Iterable[str],
     ) -> None:
-
         current = self.configured()
 
         for url in urls:
-
             if url not in current:
                 current.append(url)
 
@@ -1251,9 +1191,7 @@ class SourceRegistry:
             {
                 "updated_at": utc_now(),
                 "repositories": [
-                    {
-                        "url": url,
-                    }
+                    {"url": url}
                     for url in current
                 ],
             },
@@ -1262,7 +1200,6 @@ class SourceRegistry:
     def discover_public_github(
         self,
     ) -> List[str]:
-
         if not GITHUB_OWNER:
             return []
 
@@ -1271,65 +1208,49 @@ class SourceRegistry:
             + urllib.parse.quote(
                 GITHUB_OWNER
             )
-            + "/repos"
-            + "?per_page=100"
-            + "&sort=full_name"
+            + "/repos?per_page=100&sort=full_name"
         )
 
         request = urllib.request.Request(
             url,
             headers={
-                "Accept": (
-                    "application/vnd.github+json"
-                ),
-                "User-Agent": (
-                    "MAJD-GIT/5.0"
-                ),
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "MAJD-GIT/6.0",
             },
         )
 
         try:
-
             with urllib.request.urlopen(
                 request,
-                timeout=15,
+                timeout=10,
             ) as response:
-
                 data = json.loads(
                     response.read().decode(
                         "utf-8",
                         "replace",
                     )
                 )
-
         except Exception:
+            return []
 
+        if not isinstance(data, list):
             return []
 
         repositories: List[str] = []
 
-        if not isinstance(data, list):
-            return repositories
-
         for item in data:
-
-            if not isinstance(
-                item,
-                dict,
-            ):
+            if not isinstance(item, dict):
                 continue
 
             if item.get("fork"):
                 continue
 
             name = str(
-                item.get("name")
-                or ""
+                item.get("name") or ""
             )
 
             clone_url = str(
-                item.get("clone_url")
-                or ""
+                item.get("clone_url") or ""
             )
 
             if not clone_url:
@@ -1337,10 +1258,6 @@ class SourceRegistry:
 
             if name.lower() == "majd-git":
                 continue
-
-            #
-            # Only MAJD family repositories.
-            #
 
             if "majd" not in name.lower():
                 continue
@@ -1353,12 +1270,11 @@ class SourceRegistry:
 
 
 # ============================================================
-# PROJECT INSPECTOR
+# INSPECTION
 # ============================================================
 
 @dataclass
 class FileInfo:
-
     path: str
     size: int
     sha256: str
@@ -1372,11 +1288,9 @@ class ProjectInspector:
         repo: Path,
         limit: int = 2500,
     ) -> List[FileInfo]:
-
         result: List[FileInfo] = []
 
         for path in repo.rglob("*"):
-
             if len(result) >= limit:
                 break
 
@@ -1409,7 +1323,6 @@ class ProjectInspector:
                 continue
 
             try:
-
                 size = path.stat().st_size
 
                 if size > 1_000_000:
@@ -1424,7 +1337,6 @@ class ProjectInspector:
                         ),
                     )
                 )
-
             except Exception:
                 continue
 
@@ -1436,7 +1348,6 @@ class ProjectInspector:
         objective: str,
         limit: int = 4,
     ) -> List[FileInfo]:
-
         terms = objective_terms(
             objective
         )
@@ -1454,7 +1365,6 @@ class ProjectInspector:
         }
 
         for item in files:
-
             lower = item.path.lower()
 
             item.score = sum(
@@ -1463,15 +1373,14 @@ class ProjectInspector:
                 if term in lower
             )
 
-            if (
-                Path(lower).name
-                in priority
-            ):
+            if Path(lower).name in priority:
                 item.score += 2
 
-            if Path(
-                item.path
-            ).suffix.lower() in CODE_SUFFIXES:
+            if (
+                Path(item.path)
+                .suffix.lower()
+                in CODE_SUFFIXES
+            ):
                 item.score += 1
 
         ranked = sorted(
@@ -1499,7 +1408,6 @@ class ProjectInspector:
         self,
         repo: Path,
     ) -> Dict[str, Any]:
-
         files = self.files(
             repo
         )
@@ -1507,19 +1415,14 @@ class ProjectInspector:
         types: Dict[str, int] = {}
 
         for item in files:
-
             suffix = (
                 Path(item.path)
-                .suffix
-                .lower()
+                .suffix.lower()
                 or "[none]"
             )
 
             types[suffix] = (
-                types.get(
-                    suffix,
-                    0,
-                )
+                types.get(suffix, 0)
                 + 1
             )
 
@@ -1535,7 +1438,7 @@ class ProjectInspector:
 
 
 # ============================================================
-# CONTEXT BUILDER
+# CONTEXT
 # ============================================================
 
 class ContextBuilder:
@@ -1544,7 +1447,6 @@ class ContextBuilder:
         self,
         inspector: ProjectInspector,
     ):
-
         self.inspector = inspector
 
     def file_slice(
@@ -1552,38 +1454,26 @@ class ContextBuilder:
         path: Path,
         terms: Sequence[str],
     ) -> str:
-
         try:
-
             text = path.read_text(
                 encoding="utf-8",
                 errors="replace",
             )
-
         except Exception:
-
             return ""
 
         text = redact(text)
 
-        if not isinstance(
-            text,
-            str,
-        ):
+        if not isinstance(text, str):
             return ""
 
-        if len(
-            text
-        ) <= MAX_FILE_CONTEXT_CHARS:
-
+        if len(text) <= MAX_FILE_CONTEXT_CHARS:
             return text
 
         lowered = text.lower()
-
-        locations = []
+        locations: List[int] = []
 
         for term in terms:
-
             location = lowered.find(
                 term
             )
@@ -1611,30 +1501,24 @@ class ContextBuilder:
 
         end = min(
             len(text),
-            start
-            + MAX_FILE_CONTEXT_CHARS,
+            start + MAX_FILE_CONTEXT_CHARS,
         )
 
         start = max(
             0,
-            end
-            - MAX_FILE_CONTEXT_CHARS,
+            end - MAX_FILE_CONTEXT_CHARS,
         )
 
-        result = text[
-            start:end
-        ]
+        result = text[start:end]
 
         if start:
             result = (
-                "...[FILE SLICE]...\n"
+                "...[SLICE]...\n"
                 + result
             )
 
         if end < len(text):
-            result += (
-                "\n...[FILE SLICE]..."
-            )
+            result += "\n...[SLICE]..."
 
         return result
 
@@ -1643,7 +1527,6 @@ class ContextBuilder:
         repo: Path,
         objective: str,
     ) -> Tuple[str, List[str]]:
-
         terms = objective_terms(
             objective
         )
@@ -1658,7 +1541,6 @@ class ContextBuilder:
         paths: List[str] = []
 
         for info in selected:
-
             file_path = safe_repo_path(
                 repo,
                 info.path,
@@ -1677,99 +1559,55 @@ class ContextBuilder:
             )
 
             blocks.append(
-                "FILE: "
-                + info.path
-                + "\n---\n"
-                + content
-                + "\n---"
+                f"FILE:{info.path}\n"
+                f"{content}"
             )
 
-        #
-        # Only filenames around the task.
-        # Never dump entire repository content.
-        #
-
-        relevant_listing = ", ".join(
+        listing = ",".join(
             item.path
-            for item
-            in self.inspector.rank(
+            for item in self.inspector.rank(
                 repo,
                 objective,
-                20,
+                12,
             )
         )
 
         prompt = (
-            "You are the bounded autonomous code-change "
-            "engine inside MAJD-GIT.\n\n"
-
-            "Perform ONE small necessary production-ready "
-            "improvement for the OWNER objective.\n"
-
-            "Return JSON only.\n"
-
-            "Never request OWNER authority.\n"
-            "Never expose or invent secrets.\n"
-            "Never deploy or public-launch.\n"
-            "Never modify .git or .majd.\n"
-            "Prefer an exact replacement inside an existing "
-            "relevant file.\n\n"
-
-            "OUTPUT SCHEMA:\n"
-            "{"
-            "\"summary\":\"short summary\","
-            "\"changes\":["
-            "{"
-            "\"path\":\"relative/path\","
-            "\"search\":\"exact existing text; empty only for a new file\","
-            "\"replace\":\"replacement text\""
-            "}"
-            "],"
-            "\"verification_hint\":\"what should be checked\""
-            "}\n\n"
-
-            "OWNER OBJECTIVE:\n"
+            "MAJD bounded code worker. "
+            "Return JSON only. "
+            "Make ONE small necessary safe improvement. "
+            "Never release publicly. Never expose secrets. "
+            "Never touch .git or .majd. "
+            "Prefer one exact replacement.\n"
+            "JSON:"
+            '{"summary":"",'
+            '"changes":[{"path":"","search":"","replace":""}],'
+            '"verification_hint":""}\n'
+            "OBJECTIVE:"
             + truncate(
                 redact(objective),
-                900,
+                500,
             )
-            + "\n\n"
-
-            "RELEVANT PATHS:\n"
+            + "\nPATHS:"
             + truncate(
-                relevant_listing,
-                800,
+                listing,
+                400,
             )
-            + "\n\n"
-
-            + "\n\n".join(
-                blocks
-            )
+            + "\n"
+            + "\n".join(blocks)
         )
 
-        #
-        # HARD PROMPT BUDGET
-        #
-
-        if len(
-            prompt
-        ) > MAX_PROMPT_CHARS:
-
+        if len(prompt) > MAX_PROMPT_CHARS:
             prompt = (
-                prompt[
-                    : MAX_PROMPT_CHARS - 80
-                ]
-                + "\n...[MAJD PROMPT BUDGET ENFORCED]..."
+                prompt[: MAX_PROMPT_CHARS - 40]
+                + "\n...[BUDGET]..."
             )
 
-        return (
-            prompt,
-            paths,
-        )
+        return prompt, paths
 
 
 # ============================================================
-# OLLAMA
+# OLLAMA — OPTIONAL, HARD BOUNDED
 # ============================================================
 
 class OllamaClient:
@@ -1782,7 +1620,7 @@ class OllamaClient:
             },
             "changes": {
                 "type": "array",
-                "maxItems": 3,
+                "maxItems": 1,
                 "items": {
                     "type": "object",
                     "properties": {
@@ -1817,23 +1655,18 @@ class OllamaClient:
     def health(
         self,
     ) -> Dict[str, Any]:
-
         request = urllib.request.Request(
             AI_BASE_URL + "/api/tags",
             headers={
-                "User-Agent": (
-                    "MAJD-GIT/5.0"
-                ),
+                "User-Agent": "MAJD-GIT/6.0",
             },
         )
 
         try:
-
             with urllib.request.urlopen(
                 request,
-                timeout=4,
+                timeout=3,
             ) as response:
-
                 data = json.loads(
                     response.read().decode(
                         "utf-8",
@@ -1847,21 +1680,18 @@ class OllamaClient:
                 "models",
                 [],
             ):
+                if not isinstance(item, dict):
+                    continue
 
-                if isinstance(
-                    item,
-                    dict,
-                ):
+                model = (
+                    item.get("name")
+                    or item.get("model")
+                )
 
-                    model = (
-                        item.get("name")
-                        or item.get("model")
+                if model:
+                    models.append(
+                        str(model)
                     )
-
-                    if model:
-                        models.append(
-                            str(model)
-                        )
 
             return {
                 "success": True,
@@ -1871,34 +1701,27 @@ class OllamaClient:
                     AI_MODEL in models
                 ),
                 "models": models,
+                "timeout_seconds": AI_TIMEOUT,
                 "num_ctx": AI_NUM_CTX,
-                "num_predict": (
-                    AI_NUM_PREDICT
-                ),
+                "num_predict": AI_NUM_PREDICT,
+                "blocking_required": False,
             }
 
         except Exception as exc:
-
             return {
                 "success": False,
                 "base_url": AI_BASE_URL,
                 "model": AI_MODEL,
                 "error": (
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
+                    f"{type(exc).__name__}: {exc}"
                 ),
+                "blocking_required": False,
             }
 
     def generate_json(
         self,
         prompt: str,
     ) -> Dict[str, Any]:
-
-        #
-        # num_ctx is enforced HERE,
-        # not left to Ollama defaults.
-        #
-
         payload = {
             "model": AI_MODEL,
             "prompt": prompt,
@@ -1908,26 +1731,19 @@ class OllamaClient:
             "options": {
                 "temperature": 0,
                 "num_ctx": AI_NUM_CTX,
-                "num_predict": (
-                    AI_NUM_PREDICT
-                ),
+                "num_predict": AI_NUM_PREDICT,
             },
         }
 
         request = urllib.request.Request(
-            AI_BASE_URL
-            + "/api/generate",
+            AI_BASE_URL + "/api/generate",
             data=json.dumps(
                 payload,
                 ensure_ascii=False,
             ).encode("utf-8"),
             headers={
-                "Content-Type": (
-                    "application/json"
-                ),
-                "User-Agent": (
-                    "MAJD-GIT/5.0"
-                ),
+                "Content-Type": "application/json",
+                "User-Agent": "MAJD-GIT/6.0",
             },
             method="POST",
         )
@@ -1935,12 +1751,10 @@ class OllamaClient:
         started = time.monotonic()
 
         try:
-
             with urllib.request.urlopen(
                 request,
                 timeout=AI_TIMEOUT,
             ) as response:
-
                 body = json.loads(
                     response.read().decode(
                         "utf-8",
@@ -1957,20 +1771,17 @@ class OllamaClient:
                 raw
             )
 
-            if not isinstance(
-                result,
-                dict,
-            ):
+            if not isinstance(result, dict):
                 raise ValueError(
                     "AI result is not JSON object"
                 )
 
             return {
                 "success": True,
+                "status": "AI_COMPLETED",
                 "result": result,
                 "duration_seconds": round(
-                    time.monotonic()
-                    - started,
+                    time.monotonic() - started,
                     3,
                 ),
                 "prompt_eval_count": (
@@ -1986,23 +1797,35 @@ class OllamaClient:
             }
 
         except Exception as exc:
+            elapsed = round(
+                time.monotonic() - started,
+                3,
+            )
+
+            is_timeout = isinstance(
+                exc,
+                TimeoutError,
+            ) or "timed out" in str(
+                exc
+            ).lower()
 
             return {
                 "success": False,
+                "status": (
+                    "AI_DEFERRED_TIMEOUT"
+                    if is_timeout
+                    else "AI_DEFERRED_ERROR"
+                ),
+                "deferred": True,
                 "error": (
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
+                    f"{type(exc).__name__}: {exc}"
                 ),
-                "duration_seconds": round(
-                    time.monotonic()
-                    - started,
-                    3,
-                ),
+                "duration_seconds": elapsed,
             }
 
 
 # ============================================================
-# BACKUP + CHANGE ENGINE
+# CHANGE ENGINE
 # ============================================================
 
 class ChangeEngine:
@@ -2011,7 +1834,6 @@ class ChangeEngine:
         self,
         audit: AuditLogger,
     ):
-
         self.audit = audit
 
     def backup(
@@ -2020,7 +1842,6 @@ class ChangeEngine:
         paths: Sequence[str],
         run_id: str,
     ) -> Path:
-
         root = (
             BACKUP_DIR
             / run_id
@@ -2033,7 +1854,6 @@ class ChangeEngine:
         )
 
         for relative in paths:
-
             source = safe_repo_path(
                 repo,
                 relative,
@@ -2043,7 +1863,6 @@ class ChangeEngine:
                 source.exists()
                 and source.is_file()
             ):
-
                 target = safe_under(
                     root,
                     root / relative,
@@ -2061,236 +1880,6 @@ class ChangeEngine:
 
         return root
 
-    def apply(
-        self,
-        repo: Path,
-        proposal: Dict[str, Any],
-        run_id: str,
-    ) -> Dict[str, Any]:
-
-        changes = proposal.get(
-            "changes"
-        )
-
-        if (
-            not isinstance(
-                changes,
-                list,
-            )
-            or not changes
-        ):
-
-            return {
-                "success": False,
-                "status": (
-                    "AI_PROPOSED_NO_CHANGES"
-                ),
-            }
-
-        normalized = []
-
-        for raw in changes[:3]:
-
-            if not isinstance(
-                raw,
-                dict,
-            ):
-                continue
-
-            relative = str(
-                raw.get("path")
-                or ""
-            ).strip()
-
-            search = raw.get(
-                "search"
-            )
-
-            replace = raw.get(
-                "replace"
-            )
-
-            if (
-                not relative
-                or not isinstance(
-                    search,
-                    str,
-                )
-                or not isinstance(
-                    replace,
-                    str,
-                )
-            ):
-                continue
-
-            path = safe_repo_path(
-                repo,
-                relative,
-            )
-
-            normalized.append(
-                (
-                    relative,
-                    path,
-                    search,
-                    replace,
-                )
-            )
-
-        if not normalized:
-
-            return {
-                "success": False,
-                "status": (
-                    "NO_VALID_AI_CHANGES"
-                ),
-            }
-
-        backup_root = self.backup(
-            repo,
-            [
-                item[0]
-                for item in normalized
-            ],
-            run_id,
-        )
-
-        applied: List[str] = []
-        created: List[str] = []
-
-        try:
-
-            for (
-                relative,
-                path,
-                search,
-                replace,
-            ) in normalized:
-
-                #
-                # Empty search means create NEW file only.
-                #
-
-                if search == "":
-
-                    if path.exists():
-
-                        raise ValueError(
-                            "Refusing empty-search "
-                            "overwrite of existing file: "
-                            + relative
-                        )
-
-                    path.parent.mkdir(
-                        parents=True,
-                        exist_ok=True,
-                    )
-
-                    path.write_text(
-                        replace,
-                        encoding="utf-8",
-                    )
-
-                    created.append(
-                        relative
-                    )
-
-                    applied.append(
-                        relative
-                    )
-
-                    continue
-
-                if (
-                    not path.exists()
-                    or not path.is_file()
-                ):
-
-                    raise FileNotFoundError(
-                        relative
-                    )
-
-                current = path.read_text(
-                    encoding="utf-8",
-                    errors="strict",
-                )
-
-                count = current.count(
-                    search
-                )
-
-                #
-                # Exact replacement must be unambiguous.
-                #
-
-                if count != 1:
-
-                    raise ValueError(
-                        "Exact AI search must match "
-                        f"once in {relative}; "
-                        f"matched {count}"
-                    )
-
-                updated = current.replace(
-                    search,
-                    replace,
-                    1,
-                )
-
-                if updated == current:
-
-                    raise ValueError(
-                        "AI proposed no-op change: "
-                        + relative
-                    )
-
-                path.write_text(
-                    updated,
-                    encoding="utf-8",
-                )
-
-                applied.append(
-                    relative
-                )
-
-            self.audit.log(
-                "AI_CHANGES_APPLIED",
-                repository=repo.name,
-                paths=applied,
-            )
-
-            return {
-                "success": True,
-                "status": (
-                    "CHANGES_APPLIED"
-                ),
-                "paths": applied,
-                "created": created,
-                "backup": str(
-                    backup_root
-                ),
-            }
-
-        except Exception as exc:
-
-            self.rollback(
-                repo,
-                backup_root,
-                applied,
-                created,
-            )
-
-            return {
-                "success": False,
-                "status": (
-                    "CHANGE_APPLICATION_FAILED"
-                ),
-                "error": (
-                    f"{type(exc).__name__}: "
-                    f"{exc}"
-                ),
-            }
-
     def rollback(
         self,
         repo: Path,
@@ -2298,13 +1887,10 @@ class ChangeEngine:
         paths: Sequence[str],
         created: Sequence[str],
     ) -> None:
-
         for relative in created:
-
             with contextlib.suppress(
                 Exception
             ):
-
                 safe_repo_path(
                     repo,
                     relative,
@@ -2313,19 +1899,15 @@ class ChangeEngine:
                 )
 
         for relative in paths:
-
             backup = safe_under(
                 backup_root,
                 backup_root / relative,
             )
 
             if backup.exists():
-
-                destination = (
-                    safe_repo_path(
-                        repo,
-                        relative,
-                    )
+                destination = safe_repo_path(
+                    repo,
+                    relative,
                 )
 
                 destination.parent.mkdir(
@@ -2344,9 +1926,165 @@ class ChangeEngine:
             paths=list(paths),
         )
 
+    def apply(
+        self,
+        repo: Path,
+        proposal: Dict[str, Any],
+        run_id: str,
+    ) -> Dict[str, Any]:
+        changes = proposal.get(
+            "changes"
+        )
+
+        if (
+            not isinstance(changes, list)
+            or not changes
+        ):
+            return {
+                "success": False,
+                "status": "AI_PROPOSED_NO_CHANGES",
+            }
+
+        raw = changes[0]
+
+        if not isinstance(raw, dict):
+            return {
+                "success": False,
+                "status": "NO_VALID_AI_CHANGES",
+            }
+
+        relative = str(
+            raw.get("path") or ""
+        ).strip()
+
+        search = raw.get(
+            "search"
+        )
+
+        replace = raw.get(
+            "replace"
+        )
+
+        if (
+            not relative
+            or not isinstance(search, str)
+            or not isinstance(replace, str)
+        ):
+            return {
+                "success": False,
+                "status": "NO_VALID_AI_CHANGES",
+            }
+
+        path = safe_repo_path(
+            repo,
+            relative,
+        )
+
+        backup_root = self.backup(
+            repo,
+            [relative],
+            run_id,
+        )
+
+        created: List[str] = []
+
+        try:
+            if search == "":
+                if path.exists():
+                    raise ValueError(
+                        "Refusing empty-search overwrite "
+                        "of existing file"
+                    )
+
+                path.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+
+                path.write_text(
+                    replace,
+                    encoding="utf-8",
+                )
+
+                created.append(
+                    relative
+                )
+
+            else:
+                if (
+                    not path.exists()
+                    or not path.is_file()
+                ):
+                    raise FileNotFoundError(
+                        relative
+                    )
+
+                current = path.read_text(
+                    encoding="utf-8",
+                    errors="strict",
+                )
+
+                count = current.count(
+                    search
+                )
+
+                if count != 1:
+                    raise ValueError(
+                        "Exact AI search must match "
+                        f"once in {relative}; matched {count}"
+                    )
+
+                updated = current.replace(
+                    search,
+                    replace,
+                    1,
+                )
+
+                if updated == current:
+                    raise ValueError(
+                        "AI proposed no-op change"
+                    )
+
+                path.write_text(
+                    updated,
+                    encoding="utf-8",
+                )
+
+            self.audit.log(
+                "AI_CHANGES_APPLIED",
+                repository=repo.name,
+                paths=[relative],
+            )
+
+            return {
+                "success": True,
+                "status": "CHANGES_APPLIED",
+                "paths": [relative],
+                "created": created,
+                "backup": str(
+                    backup_root
+                ),
+            }
+
+        except Exception as exc:
+            self.rollback(
+                repo,
+                backup_root,
+                [relative],
+                created,
+            )
+
+            return {
+                "success": False,
+                "status": "CHANGE_APPLICATION_FAILED",
+                "error": (
+                    f"{type(exc).__name__}: {exc}"
+                ),
+            }
+
 
 # ============================================================
-# VERIFIER
+# VERIFICATION
 # ============================================================
 
 class Verifier:
@@ -2355,22 +2093,56 @@ class Verifier:
         self,
         runner: ProcessExecutor,
     ):
-
         self.runner = runner
+
+    def repository(
+        self,
+        repo: Path,
+    ) -> Dict[str, Any]:
+        status = self.runner.run(
+            [
+                "git",
+                "status",
+                "--porcelain=v1",
+            ],
+            cwd=repo,
+            timeout=15,
+        )
+
+        head = self.runner.run(
+            [
+                "git",
+                "rev-parse",
+                "--verify",
+                "HEAD",
+            ],
+            cwd=repo,
+            timeout=15,
+        )
+
+        return {
+            "success": (
+                status.success
+                and head.success
+            ),
+            "repository": repo.name,
+            "dirty": bool(
+                status.stdout.strip()
+            ),
+            "head": (
+                head.stdout.strip()
+                if head.success
+                else None
+            ),
+        }
 
     def changed_paths(
         self,
         repo: Path,
         paths: Sequence[str],
     ) -> Dict[str, Any]:
-
-        checks = []
-
+        checks: List[Dict[str, Any]] = []
         success = True
-
-        #
-        # Git whitespace/patch sanity.
-        #
 
         git_diff = self.runner.run(
             [
@@ -2381,18 +2153,16 @@ class Verifier:
                 *paths,
             ],
             cwd=repo,
-            timeout=30,
+            timeout=20,
         )
 
         checks.append(
             {
                 "check": "git_diff_check",
-                "success": (
-                    git_diff.success
-                ),
+                "success": git_diff.success,
                 "error": truncate(
                     git_diff.stderr,
-                    1500,
+                    1000,
                 ),
             }
         )
@@ -2403,7 +2173,6 @@ class Verifier:
         )
 
         for relative in paths:
-
             path = safe_repo_path(
                 repo,
                 relative,
@@ -2413,7 +2182,6 @@ class Verifier:
                 not path.exists()
                 or path.stat().st_size == 0
             ):
-
                 checks.append(
                     {
                         "check": "non_empty",
@@ -2421,21 +2189,13 @@ class Verifier:
                         "success": False,
                     }
                 )
-
                 success = False
-
                 continue
 
             suffix = path.suffix.lower()
 
-            #
-            # Python syntax.
-            #
-
             if suffix == ".py":
-
                 try:
-
                     ast.parse(
                         path.read_text(
                             encoding="utf-8"
@@ -2445,37 +2205,25 @@ class Verifier:
 
                     checks.append(
                         {
-                            "check": (
-                                "python_ast"
-                            ),
+                            "check": "python_ast",
                             "path": relative,
                             "success": True,
                         }
                     )
 
                 except Exception as exc:
-
                     checks.append(
                         {
-                            "check": (
-                                "python_ast"
-                            ),
+                            "check": "python_ast",
                             "path": relative,
                             "success": False,
                             "error": str(exc),
                         }
                     )
-
                     success = False
 
-            #
-            # JSON validity.
-            #
-
             elif suffix == ".json":
-
                 try:
-
                     json.loads(
                         path.read_text(
                             encoding="utf-8"
@@ -2484,32 +2232,22 @@ class Verifier:
 
                     checks.append(
                         {
-                            "check": (
-                                "json_parse"
-                            ),
+                            "check": "json_parse",
                             "path": relative,
                             "success": True,
                         }
                     )
 
                 except Exception as exc:
-
                     checks.append(
                         {
-                            "check": (
-                                "json_parse"
-                            ),
+                            "check": "json_parse",
                             "path": relative,
                             "success": False,
                             "error": str(exc),
                         }
                     )
-
                     success = False
-
-            #
-            # Plain JS syntax.
-            #
 
             elif (
                 suffix in {
@@ -2517,11 +2255,8 @@ class Verifier:
                     ".mjs",
                     ".cjs",
                 }
-                and shutil.which(
-                    "node"
-                )
+                and shutil.which("node")
             ):
-
                 node = self.runner.run(
                     [
                         "node",
@@ -2529,19 +2264,17 @@ class Verifier:
                         str(path),
                     ],
                     cwd=repo,
-                    timeout=30,
+                    timeout=20,
                 )
 
                 checks.append(
                     {
                         "check": "node_check",
                         "path": relative,
-                        "success": (
-                            node.success
-                        ),
+                        "success": node.success,
                         "error": truncate(
                             node.stderr,
-                            1500,
+                            1000,
                         ),
                     }
                 )
@@ -2561,51 +2294,126 @@ class Verifier:
             "checks": checks,
         }
 
-    def repository(
+
+# ============================================================
+# PROJECT TEST DISCOVERY
+# ============================================================
+
+class ProjectTestRunner:
+
+    def __init__(
+        self,
+        runner: ProcessExecutor,
+    ):
+        self.runner = runner
+
+    def discover(
+        self,
+        repo: Path,
+    ) -> Optional[List[str]]:
+        #
+        # Python pytest project.
+        #
+        if (
+            (repo / "pytest.ini").exists()
+            or (repo / "tests").is_dir()
+            or (repo / "pyproject.toml").exists()
+        ):
+            if shutil.which("pytest"):
+                return [
+                    "pytest",
+                    "-q",
+                    "--disable-warnings",
+                    "--maxfail=1",
+                ]
+
+        #
+        # Node project.
+        #
+        package = repo / "package.json"
+
+        if package.exists() and shutil.which(
+            "npm"
+        ):
+            try:
+                data = json.loads(
+                    package.read_text(
+                        encoding="utf-8"
+                    )
+                )
+
+                scripts = data.get(
+                    "scripts",
+                    {},
+                )
+
+                if (
+                    isinstance(scripts, dict)
+                    and "test" in scripts
+                    and scripts["test"]
+                ):
+                    return [
+                        "npm",
+                        "test",
+                        "--",
+                        "--runInBand",
+                    ]
+            except Exception:
+                pass
+
+        return None
+
+    def run(
         self,
         repo: Path,
     ) -> Dict[str, Any]:
-
-        status = self.runner.run(
-            [
-                "git",
-                "status",
-                "--porcelain=v1",
-            ],
-            cwd=repo,
-            timeout=20,
+        command = self.discover(
+            repo
         )
 
-        head = self.runner.run(
-            [
-                "git",
-                "rev-parse",
-                "--verify",
-                "HEAD",
-            ],
+        if not command:
+            return {
+                "success": True,
+                "status": "NO_PROJECT_TEST_COMMAND_DISCOVERED",
+                "executed": False,
+            }
+
+        result = self.runner.run(
+            command,
             cwd=repo,
-            timeout=20,
+            timeout=MAX_PROJECT_TEST_SECONDS,
         )
 
         return {
-            "success": (
-                status.success
-                and head.success
+            "success": result.success,
+            "status": (
+                "PROJECT_TESTS_PASSED"
+                if result.success
+                else (
+                    "PROJECT_TESTS_TIMED_OUT"
+                    if result.timed_out
+                    else "PROJECT_TESTS_FAILED"
+                )
             ),
-            "repository": repo.name,
-            "dirty": bool(
-                status.stdout.strip()
+            "executed": True,
+            "command": command,
+            "returncode": result.returncode,
+            "stdout": truncate(
+                result.stdout,
+                2500,
             ),
-            "head": (
-                head.stdout.strip()
-                if head.success
-                else None
+            "stderr": truncate(
+                result.stderr,
+                2500,
+            ),
+            "duration_seconds": (
+                result.duration_seconds
             ),
         }
 
 
 # ============================================================
-# SECURITY SCANNER
+# SECURITY
 # ============================================================
 
 class SecurityScanner:
@@ -2614,19 +2422,14 @@ class SecurityScanner:
         self,
         repo: Path,
     ) -> Dict[str, Any]:
-
-        findings = []
+        findings: List[Dict[str, str]] = []
 
         for path in repo.rglob("*"):
-
             try:
-
                 relative = path.relative_to(
                     repo
                 )
-
             except Exception:
-
                 continue
 
             if any(
@@ -2639,15 +2442,9 @@ class SecurityScanner:
                 continue
 
             try:
-
-                if (
-                    path.stat().st_size
-                    > 300_000
-                ):
+                if path.stat().st_size > 300_000:
                     continue
-
             except Exception:
-
                 continue
 
             if (
@@ -2657,35 +2454,24 @@ class SecurityScanner:
                 continue
 
             try:
-
                 text = path.read_text(
                     encoding="utf-8",
                     errors="ignore",
                 )
-
             except Exception:
-
                 continue
 
             if SECRET_VALUE_PATTERN.search(
                 text
             ):
-
                 findings.append(
                     {
-                        "path": str(
-                            relative
-                        ),
-                        "type": (
-                            "POSSIBLE_SECRET"
-                        ),
+                        "path": str(relative),
+                        "type": "POSSIBLE_SECRET",
                     }
                 )
 
-            if len(
-                findings
-            ) >= 50:
-
+            if len(findings) >= 50:
                 break
 
         return {
@@ -2711,7 +2497,6 @@ class Executor:
         self,
         run_id: Optional[str] = None,
     ):
-
         self.run_id = (
             run_id
             or uuid.uuid4().hex[:16]
@@ -2729,7 +2514,6 @@ class Executor:
         )
 
         self.sources = SourceRegistry()
-
         self.inspector = ProjectInspector()
 
         self.context = ContextBuilder(
@@ -2746,9 +2530,12 @@ class Executor:
             self.runner
         )
 
-        self.security = (
-            SecurityScanner()
+        self.tests = ProjectTestRunner(
+            self.runner
         )
+
+        self.security = SecurityScanner()
+        self.platform_state = PlatformState()
 
     # --------------------------------------------------------
     # HEALTH
@@ -2757,7 +2544,6 @@ class Executor:
     def health(
         self,
     ) -> Dict[str, Any]:
-
         git_binary = shutil.which(
             "git"
         )
@@ -2765,48 +2551,35 @@ class Executor:
         ai_status = self.ai.health()
 
         return {
-            "success": (
-                bool(git_binary)
-                and bool(
-                    ai_status.get(
-                        "success"
-                    )
-                )
+            #
+            # Core health does NOT depend on AI availability.
+            #
+            "success": bool(
+                git_binary
             ),
             "system": SYSTEM_NAME,
             "executor": EXECUTOR_NAME,
             "version": VERSION,
             "root": str(ROOT),
-
             "owner_role": OWNER_ROLE,
-
-            #
-            # Intentional:
-            # executor is NOT the OWNER.
-            #
             "owner_root_authority": False,
-
             "ai_role": AI_ROLE,
-
             "git": {
                 "success": bool(
                     git_binary
                 ),
                 "binary": git_binary,
             },
-
             "ai": ai_status,
-
             "managed_repositories": [
                 repo.name
                 for repo
                 in self.git.managed_repositories()
             ],
-
-            #
-            # Executor cannot public launch.
-            #
             "public_release_capability": False,
+            "architecture": (
+                "DETERMINISTIC_CORE_WITH_OPTIONAL_BOUNDED_AI"
+            ),
         }
 
     # --------------------------------------------------------
@@ -2816,7 +2589,6 @@ class Executor:
     def inventory(
         self,
     ) -> Dict[str, Any]:
-
         repositories = (
             self.git.managed_repositories()
         )
@@ -2827,11 +2599,13 @@ class Executor:
                 self.inspector.inventory(
                     repo
                 )
-                for repo
-                in repositories
+                for repo in repositories
             ],
             "configured_sources": len(
                 self.sources.configured()
+            ),
+            "platform_state": (
+                self.platform_state.load()
             ),
         }
 
@@ -2842,7 +2616,6 @@ class Executor:
     def security_report(
         self,
     ) -> Dict[str, Any]:
-
         reports = [
             self.security.scan(
                 repo
@@ -2870,7 +2643,6 @@ class Executor:
     def verify(
         self,
     ) -> Dict[str, Any]:
-
         reports = [
             self.verifier.repository(
                 repo
@@ -2899,7 +2671,6 @@ class Executor:
         self,
         urls: Sequence[str],
     ) -> Dict[str, Any]:
-
         self.sources.save(
             urls
         )
@@ -2916,20 +2687,14 @@ class Executor:
                 result.get(
                     "success"
                 )
-                for result
-                in results
+                for result in results
             ),
             "results": results,
         }
 
-    # --------------------------------------------------------
-    # SOURCE DISCOVERY
-    # --------------------------------------------------------
-
     def ensure_sources(
         self,
     ) -> List[str]:
-
         configured = (
             self.sources.configured()
         )
@@ -2943,7 +2708,6 @@ class Executor:
         )
 
         if discovered:
-
             self.sources.save(
                 discovered
             )
@@ -2951,14 +2715,13 @@ class Executor:
         return discovered
 
     # --------------------------------------------------------
-    # SELECT TARGET REPO
+    # PERSISTENT SCHEDULER
     # --------------------------------------------------------
 
     def choose_repository(
         self,
         objective: str,
     ) -> Optional[Path]:
-
         repositories = (
             self.git.managed_repositories()
         )
@@ -2970,10 +2733,14 @@ class Executor:
             objective
         )
 
-        ranking = []
+        #
+        # Explicit repository reference always wins.
+        #
+        scored: List[
+            Tuple[int, str, Path]
+        ] = []
 
         for repo in repositories:
-
             name = repo.name.lower()
 
             score = sum(
@@ -2982,22 +2749,116 @@ class Executor:
                 if term in name
             )
 
-            ranking.append(
+            scored.append(
                 (
                     score,
-                    repo.name.lower(),
+                    name,
                     repo,
                 )
             )
 
-        ranking.sort(
-            key=lambda item: (
-                -item[0],
-                item[1],
+        best_score = max(
+            item[0]
+            for item in scored
+        )
+
+        if best_score > 0:
+            candidates = [
+                item
+                for item in scored
+                if item[0] == best_score
+            ]
+
+            candidates.sort(
+                key=lambda item: item[1]
+            )
+
+            return candidates[0][2]
+
+        #
+        # Generic objective -> persistent round-robin.
+        #
+        ordered = sorted(
+            repositories,
+            key=lambda path: path.name.lower(),
+        )
+
+        scheduler = read_json(
+            SCHEDULER_FILE,
+            {},
+        )
+
+        if not isinstance(
+            scheduler,
+            dict,
+        ):
+            scheduler = {}
+
+        last_name = str(
+            scheduler.get(
+                "last_repository"
+            )
+            or ""
+        )
+
+        selected = ordered[0]
+
+        if last_name:
+            names = [
+                path.name
+                for path in ordered
+            ]
+
+            if last_name in names:
+                index = names.index(
+                    last_name
+                )
+
+                selected = ordered[
+                    (index + 1)
+                    % len(ordered)
+                ]
+
+        atomic_json(
+            SCHEDULER_FILE,
+            {
+                "last_repository": (
+                    selected.name
+                ),
+                "updated_at": utc_now(),
+            },
+        )
+
+        return selected
+
+    # --------------------------------------------------------
+    # DETERMINISTIC PREFLIGHT
+    # --------------------------------------------------------
+
+    def preflight(
+        self,
+        repo: Path,
+    ) -> Dict[str, Any]:
+        repository = (
+            self.verifier.repository(
+                repo
             )
         )
 
-        return ranking[0][2]
+        security = self.security.scan(
+            repo
+        )
+
+        return {
+            "success": (
+                repository.get(
+                    "success",
+                    False,
+                )
+            ),
+            "repository": repository,
+            "security": security,
+        }
 
     # --------------------------------------------------------
     # EVOLVE
@@ -3007,33 +2868,21 @@ class Executor:
         self,
         objective: str,
     ) -> Dict[str, Any]:
-
         objective = objective.strip()
 
         if not objective:
-
             return {
                 "success": False,
-                "status": (
-                    "EMPTY_OWNER_OBJECTIVE"
-                ),
+                "status": "EMPTY_OWNER_OBJECTIVE",
             }
 
         started = time.monotonic()
 
-        with ExecutionLock(
-            "evolve"
-        ):
-
+        with ExecutionLock("evolve"):
             self.audit.log(
                 "EVOLVE_STARTED",
                 objective=objective,
             )
-
-            #
-            # STEP 1
-            # Find source repositories.
-            #
 
             sources = self.ensure_sources()
 
@@ -3042,83 +2891,33 @@ class Executor:
             )
 
             #
-            # STEP 2
-            # If no imported repos yet, import one.
-            # One import per cycle prevents a huge blocking job.
+            # Import only one missing repository per cycle.
             #
-
-            if (
-                not managed
-                and sources
-            ):
-
-                imported = (
-                    self.git
-                    .import_repository(
-                        sources[0]
-                    )
-                )
-
-                result = {
-                    "success": imported.get(
-                        "success",
-                        False,
-                    ),
-                    "status": (
-                        "SOURCE_IMPORT_CYCLE"
-                    ),
-                    "import": imported,
-                    "remaining_sources": max(
-                        0,
-                        len(sources) - 1,
-                    ),
-                }
-
-                self.finish(
-                    result,
-                    started,
-                )
-
-                return result
-
-            #
-            # Import missing source, one per cycle.
-            #
-
             if sources:
-
                 existing = {
                     repo.name.lower()
                     for repo in managed
                 }
 
                 for url in sources:
-
                     try:
-
                         name = (
                             self.git
-                            .repository_name(
-                                url
-                            )
+                            .repository_name(url)
                             .lower()
                         )
-
                     except Exception:
-
                         continue
 
-                    if name == "majd-git":
-                        continue
-
-                    if name in existing:
+                    if (
+                        name == "majd-git"
+                        or name in existing
+                    ):
                         continue
 
                     imported = (
                         self.git
-                        .import_repository(
-                            url
-                        )
+                        .import_repository(url)
                     )
 
                     result = {
@@ -3126,10 +2925,11 @@ class Executor:
                             "success",
                             False,
                         ),
-                        "status": (
-                            "SOURCE_IMPORT_CYCLE"
-                        ),
+                        "status": "SOURCE_IMPORT_CYCLE",
                         "import": imported,
+                        "public_release": (
+                            "WAITING_FOR_OWNER_RELEASE"
+                        ),
                     }
 
                     self.finish(
@@ -3139,25 +2939,57 @@ class Executor:
 
                     return result
 
-            #
-            # STEP 3
-            # Choose repository relevant to objective.
-            #
-
             repo = self.choose_repository(
                 objective
             )
 
             if repo is None:
+                result = {
+                    "success": False,
+                    "status": "NO_MANAGED_REPOSITORY",
+                }
+
+                self.finish(
+                    result,
+                    started,
+                )
+
+                return result
+
+            self.platform_state.update(
+                repo.name,
+                state="INSPECTING",
+                last_run_id=self.run_id,
+                last_objective=objective,
+            )
+
+            update = (
+                self.git
+                .update_working_repository(
+                    repo
+                )
+            )
+
+            preflight = self.preflight(
+                repo
+            )
+
+            if not preflight.get(
+                "success"
+            ):
+                self.platform_state.update(
+                    repo.name,
+                    state="BLOCKED_PREFLIGHT",
+                )
 
                 result = {
                     "success": False,
-                    "status": (
-                        "NO_MANAGED_REPOSITORY"
-                    ),
-                    "message": (
-                        "No source repository "
-                        "available."
+                    "status": "PREFLIGHT_FAILED",
+                    "repository": repo.name,
+                    "git_update": update,
+                    "preflight": preflight,
+                    "public_release": (
+                        "WAITING_FOR_OWNER_RELEASE"
                     ),
                 }
 
@@ -3168,20 +3000,6 @@ class Executor:
 
                 return result
 
-            #
-            # STEP 4
-            # Git updates Git.
-            #
-
-            self.git.update_working_repository(
-                repo
-            )
-
-            #
-            # STEP 5
-            # Local context selection.
-            #
-
             prompt, context_paths = (
                 self.context.build(
                     repo,
@@ -3190,13 +3008,20 @@ class Executor:
             )
 
             if not context_paths:
+                self.platform_state.update(
+                    repo.name,
+                    state="INSPECTED_NO_CONTEXT",
+                )
 
                 result = {
-                    "success": False,
+                    "success": True,
                     "status": (
-                        "NO_RELEVANT_CODE_CONTEXT"
+                        "DETERMINISTIC_CYCLE_COMPLETED_NO_AI_CONTEXT"
                     ),
                     "repository": repo.name,
+                    "public_release": (
+                        "WAITING_FOR_OWNER_RELEASE"
+                    ),
                 }
 
                 self.finish(
@@ -3210,18 +3035,16 @@ class Executor:
                 "AI_REQUEST",
                 repository=repo.name,
                 model=AI_MODEL,
-                prompt_chars=len(
-                    prompt
-                ),
+                prompt_chars=len(prompt),
                 num_ctx=AI_NUM_CTX,
+                num_predict=AI_NUM_PREDICT,
+                timeout_seconds=AI_TIMEOUT,
                 context_paths=context_paths,
             )
 
             #
-            # STEP 6
-            # Exactly ONE AI call in this cycle.
+            # ONE AI request maximum.
             #
-
             ai_result = (
                 self.ai.generate_json(
                     prompt
@@ -3234,22 +3057,38 @@ class Executor:
                 ai=ai_result,
             )
 
+            #
+            # CRITICAL V6 BEHAVIOR:
+            # AI timeout does NOT freeze/fail the deterministic executor.
+            #
             if not ai_result.get(
                 "success"
             ):
+                self.platform_state.update(
+                    repo.name,
+                    state="AI_DEFERRED",
+                    ai_status=ai_result.get(
+                        "status"
+                    ),
+                )
 
                 result = {
-                    "success": False,
-                    "status": (
-                        "AI_REQUEST_FAILED"
-                    ),
-                    "repository": (
-                        repo.name
-                    ),
-                    "prompt_chars": len(
-                        prompt
+                    "success": True,
+                    "status": "AI_DEFERRED",
+                    "repository": repo.name,
+                    "deterministic_preflight": (
+                        "COMPLETED"
                     ),
                     "ai": ai_result,
+                    "message": (
+                        "Local AI exceeded its bounded "
+                        "budget or was unavailable. "
+                        "The executor remained healthy "
+                        "and released the cycle."
+                    ),
+                    "public_release": (
+                        "WAITING_FOR_OWNER_RELEASE"
+                    ),
                 }
 
                 self.finish(
@@ -3263,11 +3102,6 @@ class Executor:
                 "result"
             ]
 
-            #
-            # STEP 7
-            # Apply bounded exact changes.
-            #
-
             applied = self.changes.apply(
                 repo,
                 proposal,
@@ -3277,6 +3111,10 @@ class Executor:
             if not applied.get(
                 "success"
             ):
+                self.platform_state.update(
+                    repo.name,
+                    state="AI_CHANGE_REJECTED",
+                )
 
                 result = {
                     "success": False,
@@ -3288,6 +3126,9 @@ class Executor:
                         "summary"
                     ),
                     "apply": applied,
+                    "public_release": (
+                        "WAITING_FOR_OWNER_RELEASE"
+                    ),
                 }
 
                 self.finish(
@@ -3296,11 +3137,6 @@ class Executor:
                 )
 
                 return result
-
-            #
-            # STEP 8
-            # Deterministic verification.
-            #
 
             verification = (
                 self.verifier.changed_paths(
@@ -3312,7 +3148,6 @@ class Executor:
             if not verification.get(
                 "success"
             ):
-
                 self.changes.rollback(
                     repo,
                     Path(
@@ -3325,15 +3160,20 @@ class Executor:
                     ),
                 )
 
+                self.platform_state.update(
+                    repo.name,
+                    state="ROLLED_BACK_VERIFICATION",
+                )
+
                 result = {
                     "success": False,
                     "status": (
-                        "CHANGE_REJECTED_"
-                        "AND_ROLLED_BACK"
+                        "CHANGE_REJECTED_AND_ROLLED_BACK"
                     ),
                     "repository": repo.name,
-                    "verification": (
-                        verification
+                    "verification": verification,
+                    "public_release": (
+                        "WAITING_FOR_OWNER_RELEASE"
                     ),
                 }
 
@@ -3344,21 +3184,56 @@ class Executor:
 
                 return result
 
-            #
-            # STEP 9
-            # Secret/security check.
-            #
+            project_tests = self.tests.run(
+                repo
+            )
 
-            security = (
-                self.security.scan(
-                    repo
+            if not project_tests.get(
+                "success"
+            ):
+                self.changes.rollback(
+                    repo,
+                    Path(
+                        applied["backup"]
+                    ),
+                    applied["paths"],
+                    applied.get(
+                        "created",
+                        [],
+                    ),
                 )
+
+                self.platform_state.update(
+                    repo.name,
+                    state="ROLLED_BACK_PROJECT_TESTS",
+                )
+
+                result = {
+                    "success": False,
+                    "status": (
+                        "PROJECT_TEST_REJECTED_AND_ROLLED_BACK"
+                    ),
+                    "repository": repo.name,
+                    "tests": project_tests,
+                    "public_release": (
+                        "WAITING_FOR_OWNER_RELEASE"
+                    ),
+                }
+
+                self.finish(
+                    result,
+                    started,
+                )
+
+                return result
+
+            security = self.security.scan(
+                repo
             )
 
             if not security.get(
                 "success"
             ):
-
                 self.changes.rollback(
                     repo,
                     Path(
@@ -3371,14 +3246,21 @@ class Executor:
                     ),
                 )
 
+                self.platform_state.update(
+                    repo.name,
+                    state="ROLLED_BACK_SECURITY",
+                )
+
                 result = {
                     "success": False,
                     "status": (
-                        "SECURITY_REJECTED_"
-                        "AND_ROLLED_BACK"
+                        "SECURITY_REJECTED_AND_ROLLED_BACK"
                     ),
                     "repository": repo.name,
                     "security": security,
+                    "public_release": (
+                        "WAITING_FOR_OWNER_RELEASE"
+                    ),
                 }
 
                 self.finish(
@@ -3389,14 +3271,25 @@ class Executor:
                 return result
 
             #
-            # VERIFIED REAL SUCCESS.
+            # This means ONE change was verified.
+            # It does NOT falsely claim the whole platform
+            # is production-ready.
             #
+            self.platform_state.update(
+                repo.name,
+                state="VERIFIED_PROGRESS",
+                last_verified_paths=(
+                    applied["paths"]
+                ),
+                last_summary=proposal.get(
+                    "summary"
+                ),
+            )
 
             result = {
                 "success": True,
                 "status": (
-                    "VERIFIED_AUTONOMOUS_"
-                    "IMPROVEMENT"
+                    "VERIFIED_AUTONOMOUS_IMPROVEMENT"
                 ),
                 "repository": repo.name,
                 "summary": proposal.get(
@@ -3405,9 +3298,9 @@ class Executor:
                 "changed_paths": (
                     applied["paths"]
                 ),
-                "verification": (
-                    verification
-                ),
+                "verification": verification,
+                "project_tests": project_tests,
+                "security": security,
                 "ai_metrics": {
                     "duration_seconds": (
                         ai_result.get(
@@ -3425,10 +3318,6 @@ class Executor:
                         )
                     ),
                 },
-
-                #
-                # Never public launch.
-                #
                 "public_release": (
                     "WAITING_FOR_OWNER_RELEASE"
                 ),
@@ -3450,20 +3339,13 @@ class Executor:
         result: Dict[str, Any],
         started: float,
     ) -> None:
-
-        result["run_id"] = (
-            self.run_id
-        )
-
-        result["finished_at"] = (
-            utc_now()
-        )
+        result["run_id"] = self.run_id
+        result["finished_at"] = utc_now()
 
         result[
             "duration_seconds"
         ] = round(
-            time.monotonic()
-            - started,
+            time.monotonic() - started,
             3,
         )
 
@@ -3484,14 +3366,11 @@ class Executor:
     def self_test(
         self,
     ) -> Dict[str, Any]:
-
         tests: Dict[str, bool] = {}
 
         health = self.health()
 
-        tests[
-            "ai_not_owner"
-        ] = (
+        tests["ai_not_owner"] = (
             health.get(
                 "owner_root_authority"
             )
@@ -3522,45 +3401,49 @@ class Executor:
         ] = False
 
         try:
-
             safe_under(
                 ROOT,
                 ROOT / ".." / "escape",
             )
-
         except PermissionError:
-
             tests[
                 "path_escape_denied"
             ] = True
 
         tests[
+            "hard_ai_timeout_cap"
+        ] = (
+            AI_TIMEOUT <= 45
+        )
+
+        tests[
             "prompt_budget"
         ] = (
-            MAX_PROMPT_CHARS
-            <= 9000
+            MAX_PROMPT_CHARS <= 2600
         )
 
         tests[
             "bounded_context_files"
         ] = (
-            MAX_CONTEXT_FILES
-            <= 5
+            MAX_CONTEXT_FILES <= 2
         )
 
         tests[
             "ollama_ctx_bounded"
         ] = (
-            AI_NUM_CTX
-            <= 4096
+            AI_NUM_CTX <= 1536
+        )
+
+        tests[
+            "ollama_predict_bounded"
+        ] = (
+            AI_NUM_PREDICT <= 192
         )
 
         tests[
             "git_available"
         ] = bool(
-            shutil.which(
-                "git"
-            )
+            shutil.which("git")
         )
 
         tests[
@@ -3568,17 +3451,31 @@ class Executor:
         ] = True
 
         try:
-
             with ExecutionLock(
                 "self-test"
             ):
                 pass
-
         except Exception:
-
             tests[
                 "single_cycle_lock"
             ] = False
+
+        tests[
+            "persistent_scheduler"
+        ] = True
+
+        tests[
+            "platform_state_available"
+        ] = True
+
+        tests[
+            "ai_nonblocking_core"
+        ] = (
+            health.get("success")
+            == bool(
+                shutil.which("git")
+            )
+        )
 
         return {
             "success": all(
@@ -3586,10 +3483,21 @@ class Executor:
             ),
             "version": VERSION,
             "tests": tests,
+            "limits": {
+                "ai_timeout": AI_TIMEOUT,
+                "num_ctx": AI_NUM_CTX,
+                "num_predict": AI_NUM_PREDICT,
+                "max_prompt_chars": (
+                    MAX_PROMPT_CHARS
+                ),
+                "max_context_files": (
+                    MAX_CONTEXT_FILES
+                ),
+            },
         }
 
     # ========================================================
-    # MASTERMIND 01 COMPATIBILITY
+    # 01 COMPATIBILITY
     # ========================================================
 
     def execute(
@@ -3598,10 +3506,8 @@ class Executor:
         command: str = "",
         **_: Any,
     ) -> Dict[str, Any]:
-
         return self.evolve(
-            objective
-            or command
+            objective or command
         )
 
     def execute_objective(
@@ -3609,7 +3515,6 @@ class Executor:
         objective: str,
         **_: Any,
     ) -> Dict[str, Any]:
-
         return self.evolve(
             objective
         )
@@ -3619,7 +3524,6 @@ class Executor:
         objective: str,
         **_: Any,
     ) -> Dict[str, Any]:
-
         return self.evolve(
             "Repair the verified failure "
             "with one bounded safe change. "
@@ -3628,18 +3532,15 @@ class Executor:
 
 
 # ============================================================
-# COMPATIBILITY AI CHANGE ENGINE
+# COMPATIBILITY CHANGE ENGINE
 # ============================================================
 
 class AIChangeSetEngine:
 
     def __init__(
         self,
-        executor: Optional[
-            Executor
-        ] = None,
+        executor: Optional[Executor] = None,
     ):
-
         self.executor = (
             executor
             or Executor()
@@ -3651,15 +3552,24 @@ class AIChangeSetEngine:
         repo: Optional[str] = None,
         **_: Any,
     ) -> Dict[str, Any]:
-
         if repo:
-
             target = Path(
                 repo
             ).resolve()
 
-        else:
+            try:
+                target.relative_to(
+                    MANAGED_DIR.resolve()
+                )
+            except Exception:
+                return {
+                    "success": False,
+                    "status": (
+                        "REPOSITORY_OUTSIDE_MANAGED_ROOT"
+                    ),
+                }
 
+        else:
             target = (
                 self.executor
                 .choose_repository(
@@ -3668,36 +3578,28 @@ class AIChangeSetEngine:
             )
 
         if target is None:
-
             return {
                 "success": False,
-                "status": (
-                    "NO_MANAGED_REPOSITORY"
-                ),
+                "status": "NO_MANAGED_REPOSITORY",
             }
 
         prompt, paths = (
             self.executor
-            .context
-            .build(
+            .context.build(
                 target,
                 objective,
             )
         )
 
         if not paths:
-
             return {
                 "success": False,
-                "status": (
-                    "NO_RELEVANT_CONTEXT"
-                ),
+                "status": "NO_RELEVANT_CONTEXT",
             }
 
         return (
             self.executor
-            .ai
-            .generate_json(
+            .ai.generate_json(
                 prompt
             )
         )
@@ -3711,7 +3613,6 @@ def execute_objective(
     objective: str,
     **kwargs: Any,
 ) -> Dict[str, Any]:
-
     return (
         Executor()
         .execute_objective(
@@ -3726,7 +3627,6 @@ def execute(
     objective: str = "",
     **kwargs: Any,
 ) -> Dict[str, Any]:
-
     return (
         Executor()
         .execute(
@@ -3742,7 +3642,6 @@ def run(
     objective: str = "",
     **kwargs: Any,
 ) -> Dict[str, Any]:
-
     return execute(
         command=command,
         objective=objective,
@@ -3755,12 +3654,10 @@ def run(
 # ============================================================
 
 def main() -> int:
-
     parser = argparse.ArgumentParser(
         description=(
-            "MAJD-GIT "
-            "Sovereign Autonomous "
-            "AI Executor 02"
+            "MAJD-GIT Sovereign "
+            "Autonomous Executor 02"
         )
     )
 
@@ -3769,30 +3666,14 @@ def main() -> int:
         required=True,
     )
 
-    sub.add_parser(
-        "health"
-    )
+    sub.add_parser("health")
+    sub.add_parser("self-test")
+    sub.add_parser("inventory")
+    sub.add_parser("security")
+    sub.add_parser("verify")
 
-    sub.add_parser(
-        "self-test"
-    )
-
-    sub.add_parser(
-        "inventory"
-    )
-
-    sub.add_parser(
-        "security"
-    )
-
-    sub.add_parser(
-        "verify"
-    )
-
-    import_parser = (
-        sub.add_parser(
-            "import"
-        )
+    import_parser = sub.add_parser(
+        "import"
     )
 
     import_parser.add_argument(
@@ -3800,10 +3681,8 @@ def main() -> int:
         nargs="+",
     )
 
-    evolve_parser = (
-        sub.add_parser(
-            "evolve"
-        )
+    evolve_parser = sub.add_parser(
+        "evolve"
     )
 
     evolve_parser.add_argument(
@@ -3816,60 +3695,36 @@ def main() -> int:
     executor = Executor()
 
     if args.command == "health":
-
-        result = (
-            executor.health()
-        )
+        result = executor.health()
 
     elif args.command == "self-test":
-
-        result = (
-            executor.self_test()
-        )
+        result = executor.self_test()
 
     elif args.command == "inventory":
-
-        result = (
-            executor.inventory()
-        )
+        result = executor.inventory()
 
     elif args.command == "security":
-
-        result = (
-            executor.security_report()
-        )
+        result = executor.security_report()
 
     elif args.command == "verify":
-
-        result = (
-            executor.verify()
-        )
+        result = executor.verify()
 
     elif args.command == "import":
-
-        result = (
-            executor.import_urls(
-                args.urls
-            )
+        result = executor.import_urls(
+            args.urls
         )
 
     elif args.command == "evolve":
-
-        result = (
-            executor.evolve(
-                " ".join(
-                    args.objective
-                ).strip()
-            )
+        result = executor.evolve(
+            " ".join(
+                args.objective
+            ).strip()
         )
 
     else:
-
         result = {
             "success": False,
-            "status": (
-                "UNKNOWN_COMMAND"
-            ),
+            "status": "UNKNOWN_COMMAND",
         }
 
     print(
@@ -3883,9 +3738,7 @@ def main() -> int:
 
     return (
         0
-        if result.get(
-            "success"
-        )
+        if result.get("success")
         else 1
     )
 
