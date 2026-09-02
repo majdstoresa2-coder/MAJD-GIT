@@ -42,10 +42,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        if self.path != "/":
-            self.send_error(404)
-            return
-
+        # Browser/UI routes fall back to the MAJD-GIT dashboard.
+        # API routes remain explicit.
         html = """<!doctype html>
 <html lang="ar" dir="rtl">
 <head>
