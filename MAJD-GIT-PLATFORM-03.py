@@ -60,43 +60,138 @@ def git_repositories():
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        if self.path != "/api/owner/service":
-            self.send_error(404)
-            return
-
         try:
+            if self.headers.get("X-MAJD-Owner-Control") != "1":
+                raise PermissionError("owner control header required")
+
+            if "application/json" not in self.headers.get("Content-Type", ""):
+                raise ValueError("application/json required")
+
             length = int(self.headers.get("Content-Length", "0"))
-            if length < 1 or length > 1024:
+            if length < 1 or length > 2048:
                 raise ValueError("invalid request size")
 
             body = json.loads(self.rfile.read(length).decode("utf-8"))
-            action = str(body.get("action", "")).strip().lower()
 
-            allowed = {
-                "start": ["systemctl", "start", "majd-git-autonomous.service"],
-                "stop": ["systemctl", "stop", "majd-git-autonomous.service"],
-                "restart": ["systemctl", "restart", "majd-git-autonomous.service"],
-            }
+            # التحكم بالخدمة
+            if self.path == "/api/owner/service":
+                action = str(body.get("action", "")).strip().lower()
 
-            if action not in allowed:
-                raise ValueError("action denied")
+                allowed = {
+                    "start": ["systemctl", "start", "majd-git-autonomous.service"],
+                    "stop": ["systemctl", "stop", "majd-git-autonomous.service"],
+                    "restart": ["systemctl", "restart", "majd-git-autonomous.service"],
+                }
 
-            cp = subprocess.run(
-                allowed[action],
-                capture_output=True,
-                text=True,
-                timeout=15
-            )
+                if action not in allowed:
+                    raise ValueError("action denied")
 
-            payload = {
-                "ok": cp.returncode == 0,
-                "action": action,
-                "service": service_state(),
-                "public_release": "BLOCKED_UNTIL_OWNER_RELEASE"
-            }
+                cp = subprocess.run(
+                    allowed[action],
+                    capture_output=True,
+                    text=True,
+                    timeout=15
+                )
+
+                payload = {
+                    "ok": cp.returncode == 0,
+                    "action": action,
+                    "service": service_state(),
+                    "public_release": "BLOCKED_UNTIL_OWNER_RELEASE"
+                }
+
+            # التحكم بالمستودعات
+            elif self.path == "/api/owner/repository":
+                name = str(body.get("repository", "")).strip()
+                action = str(body.get("action", "")).strip().lower()
+
+                managed = (ROOT / "managed").resolve()
+                repo = (managed / name).resolve()
+
+                if repo.parent != managed:
+                    raise ValueError("repository denied")
+
+                if not repo.is_dir() or not (repo / ".git").exists():
+                    raise ValueError("repository not found")
+
+                if action == "verify":
+                    branch = subprocess.check_output(
+                        ["git", "-C", str(repo), "branch", "--show-current"],
+                        text=True, timeout=5
+                    ).strip() or "DETACHED"
+
+                    head = subprocess.check_output(
+                        ["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
+                        text=True, timeout=5
+                    ).strip()
+
+                    status = subprocess.check_output(
+                        ["git", "-C", str(repo), "status", "--porcelain"],
+                        text=True, timeout=5
+                    ).strip()
+
+                    payload = {
+                        "ok": True,
+                        "repository": name,
+                        "action": "verify",
+                        "branch": branch,
+                        "head": head,
+                        "dirty": bool(status),
+                        "public_release": "BLOCKED_UNTIL_OWNER_RELEASE"
+                    }
+
+                elif action == "sync":
+                    status = subprocess.check_output(
+                        ["git", "-C", str(repo), "status", "--porcelain"],
+                        text=True, timeout=5
+                    ).strip()
+
+                    if status:
+                        raise ValueError("repository has local changes; sync denied")
+
+                    fetch = subprocess.run(
+                        ["git", "-C", str(repo), "fetch", "--prune", "origin"],
+                        capture_output=True,
+                        text=True,
+                        timeout=60
+                    )
+
+                    if fetch.returncode != 0:
+                        raise RuntimeError("git fetch failed")
+
+                    pull = subprocess.run(
+                        ["git", "-C", str(repo), "pull", "--ff-only"],
+                        capture_output=True,
+                        text=True,
+                        timeout=60
+                    )
+
+                    if pull.returncode != 0:
+                        raise RuntimeError("fast-forward sync failed")
+
+                    head = subprocess.check_output(
+                        ["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
+                        text=True, timeout=5
+                    ).strip()
+
+                    payload = {
+                        "ok": True,
+                        "repository": name,
+                        "action": "sync",
+                        "head": head,
+                        "result": pull.stdout.strip()[-500:],
+                        "public_release": "BLOCKED_UNTIL_OWNER_RELEASE"
+                    }
+
+                else:
+                    raise ValueError("repository action denied")
+
+            else:
+                self.send_error(404)
+                return
 
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self.send_response(200 if payload["ok"] else 500)
+            self.send_response(200 if payload.get("ok") else 500)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(data)))
@@ -208,6 +303,11 @@ async function refresh(){
      '<small>آخر Commit: <span dir="ltr">'+(g.head||'—')+'</span></small>'+
      '<small>الرسالة: '+(g.last_commit||'—')+'</small>'+
      '<small>Git: '+(g.dirty ? 'تغييرات غير محفوظة' : 'نظيف')+'</small>'+
+     '<div style="margin-top:10px">'+
+     '<button onclick="ownerRepo(\''+name+'\',\'verify\')">تحقق Git</button> '+
+     '<button onclick="ownerRepo(\''+name+'\',\'sync\')">مزامنة آمنة</button>'+
+     '</div>'+
+     '<small id="repoResult-'+name+'" style="display:block;margin-top:8px"></small>'+
      '<small>آخر تحديث: <span dir="ltr">'+(x.updated_at ? new Date(x.updated_at).toLocaleString('ar-SA') : '—')+'</span></small>';
    repos.appendChild(el);
   });
@@ -222,7 +322,7 @@ async function ownerService(action){
   try{
     const r=await fetch('/api/owner/service',{
       method:'POST',
-      headers:{'Content-Type':'application/json'},
+      headers:{'Content-Type':'application/json','X-MAJD-Owner-Control':'1'},
       body:JSON.stringify({action})
     });
 
@@ -237,6 +337,44 @@ async function ownerService(action){
     setTimeout(load,800);
   }catch(e){
     out.textContent='تعذر تنفيذ الأمر';
+  }
+}
+
+
+async function ownerRepo(name,action){
+  const out=document.getElementById('repoResult-'+name);
+  out.textContent='جارٍ التنفيذ...';
+
+  try{
+    const r=await fetch('/api/owner/repository',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'X-MAJD-Owner-Control':'1'
+      },
+      body:JSON.stringify({
+        repository:name,
+        action:action
+      })
+    });
+
+    const d=await r.json();
+
+    if(!r.ok || !d.ok){
+      out.textContent='رفض التنفيذ: '+(d.error||'خطأ');
+      return;
+    }
+
+    if(action==='verify'){
+      out.textContent='تم التحقق — '+d.branch+' / '+d.head+
+        (d.dirty ? ' / توجد تغييرات' : ' / Git نظيف');
+    }else{
+      out.textContent='تمت المزامنة — '+d.head;
+    }
+
+    setTimeout(load,800);
+  }catch(e){
+    out.textContent='تعذر تنفيذ العملية';
   }
 }
 
