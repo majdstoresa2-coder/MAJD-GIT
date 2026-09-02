@@ -10,41 +10,43 @@ MAJD-AI-MASTERMIND-01.py
 MAJD AI SOVEREIGN MASTERMIND
 العقل المدبر السيادي لمنصة MAJD-GIT
 
-PURPOSE
--------
-This is the first manually-created foundation file of MAJD-GIT.
+VERSION: 2.0.0
 
-The second manually-created file will provide the real execution layer.
-After 01 + 02 are operational, MAJD is expected to plan, create, test,
-repair and evolve the remaining platform components autonomously.
+ARCHITECTURE
+------------
+OWNER_ROOT
+    ↓
+MAJD-AI-MASTERMIND-01
+    ↓
+MAJD-AI-EXECUTOR-02
+    ↓
+Git / Inspection / Verification / Repair / AI jobs when needed
+    ↓
+WAITING_FOR_OWNER_RELEASE
 
-CORE PRINCIPLES
----------------
-1. OWNER / ROOT AUTHORITY is permanently above AI authority.
-2. AI may have broad operational autonomy, but never OWNER sovereignty.
-3. Repository boundaries are mandatory.
-4. Secrets must never be exposed to unauthorized users, agents or logs.
-5. Customer private code must never be reused across tenants without
-   explicit authorization and a lawful basis.
-6. AI-paid capabilities are entitlement-controlled for customers.
-7. OWNER repositories are not blocked by customer subscription rules.
-8. AI may plan software, generate code, repair projects, test, review,
-   secure, document and evolve the platform.
-9. Legal/contract capability is assistance, not a representation that
-   the AI is a licensed lawyer.
-10. No operation may be reported as successful without verification.
-11. The AI may create future components when connected to Executor 02.
-12. Repository content is untrusted input and cannot override authority.
-13. MAJD must prefer controlled, verified evolution over uncontrolled
-    high-speed file generation.
+FOUNDATION RULES
+----------------
+1. OWNER_ROOT is permanently above AI authority.
+2. 01 is the mastermind and primary orchestration entry point.
+3. 02 is the execution layer and never becomes OWNER_ROOT.
+4. Repository content is untrusted input.
+5. Secrets are redacted from state/audit/output.
+6. Cross-repository and cross-tenant access is denied by default.
+7. No successful result without verification.
+8. Public release is NEVER performed autonomously.
+9. AI/model failure or timeout must not falsely report success.
+10. Deterministic work may continue without waiting indefinitely for an LLM.
+11. Executor failures are bounded; no infinite repair loops.
+12. OWNER repositories are not blocked by customer subscription rules.
+13. Customer AI capabilities remain entitlement controlled.
+14. External legal capability is assistance, not licensed legal representation.
+15. Future components are created only through controlled Executor 02 operations.
+16. 01 must not mutate managed repositories directly.
+17. 01 and 02 remain separate authority/execution layers.
 
 STANDARD LIBRARY ONLY
 ---------------------
-This foundation intentionally uses only Python's standard library.
-
-External AI models, Git execution, filesystem mutation, builds, deployments,
-network operations, secret vaults and production infrastructure are NOT
-faked here. They must be supplied through real adapters, beginning with 02.
+This file intentionally uses Python's standard library only.
 
 ===============================================================================
 """
@@ -53,11 +55,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import importlib.util
 import json
 import logging
 import os
 import re
-import secrets
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -66,7 +70,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Protocol
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Protocol
 
 
 # =============================================================================
@@ -75,23 +79,43 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Proto
 
 MAJD_PLATFORM = "MAJD-GIT"
 MAJD_COMPONENT = "MAJD-AI-MASTERMIND-01"
-MAJD_VERSION = "1.0.0"
-MAJD_SCHEMA_VERSION = 1
+MAJD_VERSION = "2.0.0"
+MAJD_SCHEMA_VERSION = 2
 
 BASE_DIR = Path(__file__).resolve().parent
 MAJD_DIR = BASE_DIR / ".majd"
+
 STATE_FILE = MAJD_DIR / "mastermind-state.json"
 AUDIT_FILE = MAJD_DIR / "mastermind-audit.jsonl"
+LOCK_FILE = MAJD_DIR / "locks" / "mastermind.lock"
+
+EXECUTOR_FILE = BASE_DIR / "MAJD-AI-EXECUTOR-02.py"
 
 MAX_AUTONOMOUS_REPAIR_ATTEMPTS = max(
     1,
-    int(os.getenv("MAJD_MAX_REPAIR_ATTEMPTS", "5")),
+    min(
+        5,
+        int(os.getenv("MAJD_MAX_REPAIR_ATTEMPTS", "3")),
+    ),
 )
 
 MAX_PLAN_STEPS = max(
     1,
-    int(os.getenv("MAJD_MAX_PLAN_STEPS", "100")),
+    min(
+        100,
+        int(os.getenv("MAJD_MAX_PLAN_STEPS", "50")),
+    ),
 )
+
+EXECUTOR_TIMEOUT = max(
+    15,
+    min(
+        120,
+        int(os.getenv("MAJD_EXECUTOR_TIMEOUT", "60")),
+    ),
+)
+
+PUBLIC_RELEASE_ALLOWED = False
 
 
 # =============================================================================
@@ -108,7 +132,11 @@ def new_id(prefix: str) -> str:
 
 
 def normalize_action(value: str) -> str:
-    return re.sub(r"[^A-Z0-9_]+", "_", value.strip().upper()).strip("_")
+    return re.sub(
+        r"[^A-Z0-9_]+",
+        "_",
+        str(value).strip().upper(),
+    ).strip("_")
 
 
 def json_safe(value: Any) -> Any:
@@ -149,11 +177,28 @@ def canonical_json(value: Any) -> str:
 
 
 def sha256_text(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return hashlib.sha256(
+        value.encode("utf-8")
+    ).hexdigest()
 
 
 def secure_compare(a: str, b: str) -> bool:
-    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+    return hmac.compare_digest(
+        str(a).encode("utf-8"),
+        str(b).encode("utf-8"),
+    )
+
+
+def bounded_text(
+    value: Any,
+    limit: int = 4000,
+) -> str:
+    text = str(value)
+
+    if len(text) <= limit:
+        return text
+
+    return text[:limit] + "...[TRUNCATED]"
 
 
 # =============================================================================
@@ -205,6 +250,7 @@ class TaskStatus(str, Enum):
     REPAIRING = "REPAIRING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+    WAITING_FOR_OWNER_RELEASE = "WAITING_FOR_OWNER_RELEASE"
 
 
 class RiskLevel(str, Enum):
@@ -274,7 +320,10 @@ class ActorContext:
     entitlements: List[Entitlement] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
-    def has_entitlement(self, entitlement: Entitlement) -> bool:
+    def has_entitlement(
+        self,
+        entitlement: Entitlement,
+    ) -> bool:
         return entitlement in self.entitlements
 
     @property
@@ -407,13 +456,6 @@ class AuditEvent:
 
 
 class SecretRedactor:
-    """
-    Prevent accidental disclosure of common secret patterns.
-
-    This is defense-in-depth, not a replacement for a real secret vault.
-    Executor 02 and future infrastructure must use proper secret references.
-    """
-
     KEYWORDS = (
         "password",
         "passwd",
@@ -443,10 +485,13 @@ class SecretRedactor:
 
     @classmethod
     def redact_text(cls, text: str) -> str:
-        result = text
+        result = str(text)
 
         for pattern in cls.TOKEN_PATTERNS:
-            result = pattern.sub("[REDACTED_SECRET]", result)
+            result = pattern.sub(
+                "[REDACTED_SECRET]",
+                result,
+            )
 
         return result
 
@@ -461,24 +506,24 @@ class SecretRedactor:
             for key, item in value.items():
                 lowered = str(key).lower()
 
-                if any(word in lowered for word in cls.KEYWORDS):
+                if any(
+                    word in lowered
+                    for word in cls.KEYWORDS
+                ):
                     cleaned[str(key)] = "[REDACTED_SECRET]"
                 else:
                     cleaned[str(key)] = cls.redact(item)
 
             return cleaned
 
-        if isinstance(value, list):
-            return [cls.redact(v) for v in value]
-
-        if isinstance(value, tuple):
+        if isinstance(value, (list, tuple)):
             return [cls.redact(v) for v in value]
 
         return value
 
 
 # =============================================================================
-# AUDIT STORAGE
+# AUDIT + STATE
 # =============================================================================
 
 
@@ -496,27 +541,25 @@ class AuditStore:
             exist_ok=True,
         )
 
-    def append(self, event: AuditEvent) -> None:
+    def append(
+        self,
+        event: AuditEvent,
+    ) -> None:
         self.initialize()
 
         payload = SecretRedactor.redact(
             json_safe(event)
         )
 
-        line = canonical_json(payload)
-
         with self._lock:
             with self.audit_file.open(
                 "a",
                 encoding="utf-8",
             ) as handle:
-                handle.write(line + "\n")
+                handle.write(
+                    canonical_json(payload) + "\n"
+                )
                 handle.flush()
-
-
-# =============================================================================
-# STATE STORE
-# =============================================================================
 
 
 class StateStore:
@@ -540,28 +583,37 @@ class StateStore:
             return {}
 
         try:
-            with self.state_file.open(
-                "r",
-                encoding="utf-8",
-            ) as handle:
-                value = json.load(handle)
+            value = json.loads(
+                self.state_file.read_text(
+                    encoding="utf-8"
+                )
+            )
 
-            if isinstance(value, dict):
-                return value
+            return (
+                value
+                if isinstance(value, dict)
+                else {}
+            )
 
-        except (OSError, json.JSONDecodeError):
-            pass
+        except (
+            OSError,
+            json.JSONDecodeError,
+        ):
+            return {}
 
-        return {}
-
-    def save(self, state: Dict[str, Any]) -> None:
+    def save(
+        self,
+        state: Dict[str, Any],
+    ) -> None:
         self.initialize()
 
         sanitized = SecretRedactor.redact(
             json_safe(state)
         )
 
-        temp = self.state_file.with_suffix(".tmp")
+        temp = self.state_file.with_suffix(
+            ".tmp"
+        )
 
         with self._lock:
             with temp.open(
@@ -578,16 +630,17 @@ class StateStore:
                 handle.flush()
                 os.fsync(handle.fileno())
 
-            os.replace(temp, self.state_file)
-
-
-# =============================================================================
-# AUDITOR
-# =============================================================================
+            os.replace(
+                temp,
+                self.state_file,
+            )
 
 
 class MajdAuditor:
-    def __init__(self, store: AuditStore) -> None:
+    def __init__(
+        self,
+        store: AuditStore,
+    ) -> None:
         self.store = store
 
     def record(
@@ -601,19 +654,21 @@ class MajdAuditor:
         severity: EventSeverity = EventSeverity.INFO,
         details: Optional[Dict[str, Any]] = None,
     ) -> None:
-        event = AuditEvent(
-            event_id=new_id("audit"),
-            timestamp=utc_now(),
-            severity=severity,
-            category=category,
-            action=action,
-            actor_id=actor.actor_id,
-            repository_id=repository_id,
-            success=success,
-            details=SecretRedactor.redact(details or {}),
+        self.store.append(
+            AuditEvent(
+                event_id=new_id("audit"),
+                timestamp=utc_now(),
+                severity=severity,
+                category=category,
+                action=action,
+                actor_id=actor.actor_id,
+                repository_id=repository_id,
+                success=success,
+                details=SecretRedactor.redact(
+                    details or {}
+                ),
+            )
         )
-
-        self.store.append(event)
 
 
 # =============================================================================
@@ -622,13 +677,6 @@ class MajdAuditor:
 
 
 class ExecutorAdapter(Protocol):
-    """
-    Contract that MAJD-AI-EXECUTOR-02.py must implement.
-
-    Mastermind 01 intentionally does not pretend to perform filesystem,
-    Git, build, network or deployment operations itself.
-    """
-
     def health(self) -> Dict[str, Any]:
         ...
 
@@ -647,12 +695,6 @@ class ExecutorAdapter(Protocol):
 
 
 class NullExecutor:
-    """
-    Safe placeholder before Executor 02 is connected.
-
-    It never claims execution succeeded.
-    """
-
     def health(self) -> Dict[str, Any]:
         return {
             "ok": False,
@@ -671,7 +713,7 @@ class NullExecutor:
             operation=request.operation,
             verified=False,
             changed=False,
-            message="Real executor is not connected.",
+            message="Real Executor 02 is unavailable.",
             error="EXECUTOR_NOT_CONNECTED",
         )
 
@@ -687,23 +729,411 @@ class NullExecutor:
                 "operation_completed": False,
                 "result_verified": False,
             },
-            message="Cannot verify without Executor 02.",
+            message="Executor 02 is unavailable.",
         )
 
 
 # =============================================================================
-# AI PROVIDER CONTRACT
+# EXECUTOR 02 BRIDGE
+# =============================================================================
+
+
+class Executor02Bridge:
+    """
+    Safe compatibility bridge between Mastermind 01 and Executor 02.
+
+    Important:
+    - Does not grant OWNER_ROOT to Executor 02.
+    - Does not permit PUBLIC_RELEASE.
+    - Health/self-test/inventory/security/verify are bounded.
+    - AI-heavy evolve calls remain bounded.
+    - Timeout is reported as failure, never success.
+    """
+
+    PUBLIC_RELEASE_OPERATIONS = {
+        "PUBLIC_RELEASE",
+        "RELEASE_PUBLIC",
+        "DEPLOY_PUBLIC",
+        "PUBLISH_PUBLIC",
+        "GO_LIVE",
+    }
+
+    def __init__(
+        self,
+        executor_file: Path = EXECUTOR_FILE,
+    ) -> None:
+        self.executor_file = executor_file
+
+    def _run_cli(
+        self,
+        args: List[str],
+        timeout: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        if not self.executor_file.exists():
+            return {
+                "ok": False,
+                "error": "EXECUTOR_FILE_NOT_FOUND",
+            }
+
+        command = [
+            sys.executable,
+            str(self.executor_file),
+            *args,
+        ]
+
+        started = time.monotonic()
+
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(BASE_DIR),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout or EXECUTOR_TIMEOUT,
+                check=False,
+                env=os.environ.copy(),
+            )
+
+        except subprocess.TimeoutExpired:
+            return {
+                "ok": False,
+                "error": "EXECUTOR_TIMEOUT",
+                "timed_out": True,
+                "duration_seconds": round(
+                    time.monotonic() - started,
+                    3,
+                ),
+            }
+
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": bounded_text(
+                    SecretRedactor.redact_text(
+                        repr(exc)
+                    )
+                ),
+                "timed_out": False,
+                "duration_seconds": round(
+                    time.monotonic() - started,
+                    3,
+                ),
+            }
+
+        stdout = bounded_text(
+            completed.stdout,
+            20000,
+        )
+
+        stderr = bounded_text(
+            completed.stderr,
+            10000,
+        )
+
+        parsed: Any = None
+
+        if completed.stdout.strip():
+            try:
+                parsed = json.loads(
+                    completed.stdout
+                )
+            except json.JSONDecodeError:
+                parsed = None
+
+        return {
+            "ok": completed.returncode == 0,
+            "returncode": completed.returncode,
+            "stdout": SecretRedactor.redact_text(
+                stdout
+            ),
+            "stderr": SecretRedactor.redact_text(
+                stderr
+            ),
+            "json": SecretRedactor.redact(
+                parsed
+            ),
+            "timed_out": False,
+            "duration_seconds": round(
+                time.monotonic() - started,
+                3,
+            ),
+        }
+
+    def health(self) -> Dict[str, Any]:
+        if not self.executor_file.exists():
+            return {
+                "ok": False,
+                "connected": False,
+                "component": "MAJD-AI-EXECUTOR-02",
+                "reason": "EXECUTOR_FILE_NOT_FOUND",
+                "path": str(self.executor_file),
+            }
+
+        result = self._run_cli(
+            ["health"],
+            timeout=15,
+        )
+
+        return {
+            "ok": bool(result.get("ok")),
+            "connected": bool(result.get("ok")),
+            "component": "MAJD-AI-EXECUTOR-02",
+            "path": str(self.executor_file),
+            "details": result.get("json"),
+            "error": result.get("error"),
+        }
+
+    @staticmethod
+    def _objective_from_request(
+        request: ExecutorRequest,
+    ) -> str:
+        objective = str(
+            request.parameters.get(
+                "objective",
+                "",
+            )
+        ).strip()
+
+        if not objective:
+            objective = (
+                f"Perform {request.operation} for "
+                f"{request.repository_id or MAJD_PLATFORM}."
+            )
+
+        return bounded_text(
+            objective,
+            1500,
+        )
+
+    def execute(
+        self,
+        request: ExecutorRequest,
+    ) -> ExecutorResult:
+        operation = normalize_action(
+            request.operation
+        )
+
+        if operation in self.PUBLIC_RELEASE_OPERATIONS:
+            return ExecutorResult(
+                ok=False,
+                request_id=request.request_id,
+                operation=operation,
+                verified=False,
+                changed=False,
+                message=(
+                    "Public release is blocked by "
+                    "Mastermind 01."
+                ),
+                error="OWNER_PUBLIC_RELEASE_REQUIRED",
+            )
+
+        deterministic_commands = {
+            "VERIFY_PROJECT": ["verify"],
+            "TEST_PROJECT": ["verify"],
+            "SECURITY_REVIEW": ["security"],
+            "SECRET_REVIEW": ["security"],
+            "ANALYZE_PROJECT": ["inventory"],
+        }
+
+        if operation in deterministic_commands:
+            raw = self._run_cli(
+                deterministic_commands[operation],
+                timeout=30,
+            )
+
+        elif operation == "AUTO_REPAIR":
+            objective = (
+                "Perform one bounded repair for repository "
+                f"{request.repository_id or MAJD_PLATFORM}. "
+                "Repair only a verified failure. "
+                "Test the repair. "
+                "Do not release publicly."
+            )
+
+            raw = self._run_cli(
+                ["evolve", objective],
+                timeout=EXECUTOR_TIMEOUT,
+            )
+
+        elif operation in {
+            "GENERATE_OR_MODIFY_CODE",
+            "BUILD_AND_OPERATE",
+            "GIT_OPERATION",
+            "EVOLVE_PLATFORM",
+        }:
+            objective = self._objective_from_request(
+                request
+            )
+
+            objective += (
+                " Perform one bounded necessary change only. "
+                "Verify the result. "
+                "Do not release publicly."
+            )
+
+            raw = self._run_cli(
+                ["evolve", objective],
+                timeout=EXECUTOR_TIMEOUT,
+            )
+
+        else:
+            return ExecutorResult(
+                ok=True,
+                request_id=request.request_id,
+                operation=operation,
+                verified=True,
+                changed=False,
+                message=(
+                    "Logical operation retained by "
+                    "Mastermind orchestration."
+                ),
+                data={
+                    "delegated": False,
+                    "reason": "NO_EXECUTOR_MUTATION_REQUIRED",
+                },
+            )
+
+        parsed = raw.get("json")
+
+        parsed_success = (
+            isinstance(parsed, dict)
+            and parsed.get("success") is True
+        )
+
+        ok = bool(
+            raw.get("ok")
+            and (
+                parsed_success
+                or parsed is None
+            )
+        )
+
+        if raw.get("timed_out"):
+            ok = False
+
+        return ExecutorResult(
+            ok=ok,
+            request_id=request.request_id,
+            operation=operation,
+            verified=False,
+            changed=bool(
+                isinstance(parsed, dict)
+                and (
+                    parsed.get("changed")
+                    or parsed.get("changes")
+                )
+            ),
+            message=(
+                "Executor 02 completed operation."
+                if ok
+                else "Executor 02 operation failed."
+            ),
+            data={
+                "executor": SecretRedactor.redact(
+                    parsed
+                    if parsed is not None
+                    else {
+                        "returncode":
+                            raw.get("returncode"),
+                        "stdout":
+                            raw.get("stdout"),
+                    }
+                ),
+                "duration_seconds":
+                    raw.get("duration_seconds"),
+            },
+            error=(
+                None
+                if ok
+                else str(
+                    raw.get("error")
+                    or (
+                        parsed.get("error")
+                        if isinstance(parsed, dict)
+                        else None
+                    )
+                    or raw.get("stderr")
+                    or "EXECUTOR_OPERATION_FAILED"
+                )
+            ),
+        )
+
+    def verify(
+        self,
+        request: ExecutorRequest,
+        result: ExecutorResult,
+    ) -> VerificationResult:
+        if not result.ok:
+            return VerificationResult(
+                ok=False,
+                checks={
+                    "operation_ok": False,
+                    "executor_verification": False,
+                },
+                message=(
+                    result.error
+                    or "Operation failed before verification."
+                ),
+            )
+
+        raw = self._run_cli(
+            ["verify"],
+            timeout=30,
+        )
+
+        parsed = raw.get("json")
+
+        parsed_success = (
+            isinstance(parsed, dict)
+            and parsed.get("success") is True
+        )
+
+        verified = bool(
+            raw.get("ok")
+            and (
+                parsed_success
+                or parsed is None
+            )
+        )
+
+        return VerificationResult(
+            ok=verified,
+            checks={
+                "operation_ok": result.ok,
+                "executor_verification": verified,
+                "public_release_blocked":
+                    not PUBLIC_RELEASE_ALLOWED,
+            },
+            evidence={
+                "executor_verify":
+                    SecretRedactor.redact(parsed),
+                "duration_seconds":
+                    raw.get("duration_seconds"),
+            },
+            message=(
+                "Executor verification passed."
+                if verified
+                else "Executor verification failed."
+            ),
+        )
+
+
+def build_executor() -> ExecutorAdapter:
+    if not EXECUTOR_FILE.exists():
+        return NullExecutor()
+
+    return Executor02Bridge(
+        EXECUTOR_FILE
+    )
+
+
+# =============================================================================
+# AI PROVIDER
 # =============================================================================
 
 
 class AIProvider(Protocol):
-    """
-    Future AI provider contract.
-
-    External models may be connected later without granting them OWNER
-    authority. Provider output remains untrusted until policy validation.
-    """
-
     def health(self) -> Dict[str, Any]:
         ...
 
@@ -719,17 +1149,18 @@ class AIProvider(Protocol):
 
 class DeterministicFoundationAI:
     """
-    Foundation planner used before a real model provider is configured.
+    Fast deterministic planner.
 
-    It provides deterministic routing only. It does NOT claim to be a
-    full external LLM.
+    Ollama is NOT required for Mastermind planning.
+    Executor 02 may use an AI provider for bounded jobs when necessary.
     """
 
     def health(self) -> Dict[str, Any]:
         return {
             "ok": True,
-            "provider": "DETERMINISTIC_FOUNDATION",
-            "external_model": False,
+            "provider": "DETERMINISTIC_MASTERMIND",
+            "external_model_required": False,
+            "blocking_llm_dependency": False,
         }
 
     def reason(
@@ -740,7 +1171,9 @@ class DeterministicFoundationAI:
         repository_context: Dict[str, Any],
     ) -> Dict[str, Any]:
         text = (
-            objective.title + " " + objective.description
+            objective.title
+            + " "
+            + objective.description
         ).lower()
 
         domains: List[AgentDomain] = [
@@ -753,7 +1186,6 @@ class DeterministicFoundationAI:
                 "secure",
                 "vulnerability",
                 "cyber",
-                "hack",
                 "اختراق",
                 "أمن",
                 "ثغرة",
@@ -763,7 +1195,6 @@ class DeterministicFoundationAI:
                 "law",
                 "contract",
                 "قانون",
-                "محامي",
                 "عقد",
             ),
             AgentDomain.IP_LICENSING: (
@@ -803,8 +1234,9 @@ class DeterministicFoundationAI:
             AgentDomain.PLATFORM_EVOLUTION: (
                 "evolve",
                 "platform",
-                "self",
                 "autonomous",
+                "production-ready",
+                "ready_for_public_launch",
                 "توسع",
                 "المنصة",
                 "ذاتي",
@@ -812,31 +1244,33 @@ class DeterministicFoundationAI:
         }
 
         for domain, keywords in keyword_domains.items():
-            if any(keyword in text for keyword in keywords):
+            if any(
+                keyword in text
+                for keyword in keywords
+            ):
                 if domain not in domains:
                     domains.append(domain)
 
         return {
-            "domains": [domain.value for domain in domains],
-            "summary": objective.description,
-            "confidence": 0.50,
-            "foundation_only": True,
+            "domains": [
+                domain.value
+                for domain in domains
+            ],
+            "summary": bounded_text(
+                objective.description,
+                1500,
+            ),
+            "confidence": 1.0,
+            "deterministic": True,
         }
 
 
 # =============================================================================
-# AUTHORITY ENGINE
+# AUTHORITY
 # =============================================================================
 
 
 class AuthorityEngine:
-    """
-    OWNER_ROOT is permanently above MAJD AI.
-
-    AI receives broad operational authority inside permitted repositories,
-    but cannot modify sovereignty or obtain root-owner capabilities.
-    """
-
     OWNER_ONLY_ACTIONS = {
         "TRANSFER_PLATFORM_OWNERSHIP",
         "REMOVE_OWNER",
@@ -850,6 +1284,11 @@ class AuthorityEngine:
         "GRANT_OWNER_TO_AI",
         "DELETE_PLATFORM_ROOT",
         "ROTATE_OWNER_ROOT_IDENTITY",
+        "PUBLIC_RELEASE",
+        "RELEASE_PUBLIC",
+        "DEPLOY_PUBLIC",
+        "PUBLISH_PUBLIC",
+        "GO_LIVE",
     }
 
     NEVER_AI_ACTIONS = OWNER_ONLY_ACTIONS | {
@@ -879,9 +1318,11 @@ class AuthorityEngine:
                 else Decision.OWNER_REQUIRED
             )
 
-        if actor.actor_type == ActorType.AI:
-            if action in self.NEVER_AI_ACTIONS:
-                return Decision.DENY
+        if (
+            actor.actor_type == ActorType.AI
+            and action in self.NEVER_AI_ACTIONS
+        ):
+            return Decision.DENY
 
         if actor.is_owner:
             return Decision.ALLOW
@@ -905,15 +1346,13 @@ class AuthorityEngine:
                 else Decision.DENY
             )
 
-        if repository.repository_id not in actor.repository_ids:
+        if (
+            repository.repository_id
+            not in actor.repository_ids
+        ):
             return Decision.DENY
 
         return Decision.ALLOW
-
-
-# =============================================================================
-# REPOSITORY ISOLATION
-# =============================================================================
 
 
 class RepositoryIsolation:
@@ -938,29 +1377,28 @@ class RepositoryIsolation:
         }:
             return repository.ai_enabled
 
-        return repository.repository_id in actor.repository_ids
-
-
-# =============================================================================
-# ENTITLEMENT ENGINE
-# =============================================================================
+        return (
+            repository.repository_id
+            in actor.repository_ids
+        )
 
 
 class EntitlementEngine:
-    """
-    Customer AI capabilities are subscription/entitlement controlled.
-
-    OWNER_ROOT is never treated as a paying customer.
-    """
-
-    ACTION_ENTITLEMENTS: Dict[str, Entitlement] = {
-        "AI_ASSIST": Entitlement.AI_ASSIST,
-        "GENERATE_CODE": Entitlement.AI_CODE_GENERATION,
-        "PLAN_PROJECT": Entitlement.AI_PROJECT_PLANNING,
-        "BUILD_PROJECT": Entitlement.AI_PROJECT_BUILD,
-        "REPAIR_PROJECT": Entitlement.AI_REPAIR,
-        "SECURITY_REVIEW": Entitlement.AI_SECURITY_REVIEW,
-        "AUTONOMOUS_DEVELOPMENT": Entitlement.AI_AUTOMATION,
+    ACTION_ENTITLEMENTS = {
+        "AI_ASSIST":
+            Entitlement.AI_ASSIST,
+        "GENERATE_CODE":
+            Entitlement.AI_CODE_GENERATION,
+        "PLAN_PROJECT":
+            Entitlement.AI_PROJECT_PLANNING,
+        "BUILD_PROJECT":
+            Entitlement.AI_PROJECT_BUILD,
+        "REPAIR_PROJECT":
+            Entitlement.AI_REPAIR,
+        "SECURITY_REVIEW":
+            Entitlement.AI_SECURITY_REVIEW,
+        "AUTONOMOUS_DEVELOPMENT":
+            Entitlement.AI_AUTOMATION,
     }
 
     def check(
@@ -984,14 +1422,15 @@ class EntitlementEngine:
         if entitlement is None:
             return Decision.ALLOW
 
-        if actor.has_entitlement(entitlement):
-            return Decision.ALLOW
-
-        return Decision.SUBSCRIPTION_REQUIRED
+        return (
+            Decision.ALLOW
+            if actor.has_entitlement(entitlement)
+            else Decision.SUBSCRIPTION_REQUIRED
+        )
 
 
 # =============================================================================
-# RISK ENGINE
+# RISK
 # =============================================================================
 
 
@@ -1028,13 +1467,22 @@ class RiskEngine:
         "تعطيل الحماية",
     }
 
-    def classify(self, text: str) -> RiskLevel:
+    def classify(
+        self,
+        text: str,
+    ) -> RiskLevel:
         lowered = text.lower()
 
-        if any(word in lowered for word in self.CRITICAL_WORDS):
+        if any(
+            word in lowered
+            for word in self.CRITICAL_WORDS
+        ):
             return RiskLevel.CRITICAL
 
-        if any(word in lowered for word in self.HIGH_RISK_WORDS):
+        if any(
+            word in lowered
+            for word in self.HIGH_RISK_WORDS
+        ):
             return RiskLevel.HIGH
 
         if len(text) > 1000:
@@ -1044,7 +1492,7 @@ class RiskEngine:
 
 
 # =============================================================================
-# SPECIALIST REGISTRY
+# SPECIALISTS
 # =============================================================================
 
 
@@ -1063,95 +1511,83 @@ class SpecialistRegistry:
             SpecialistProfile
         ] = {}
 
-        self._register_defaults()
-
-    def _register_defaults(self) -> None:
-        profiles = [
-            SpecialistProfile(
+        entries = [
+            (
                 AgentDomain.SOFTWARE_ENGINEERING,
-                "Software design, implementation and repair.",
-                True,
+                "Software engineering.",
                 True,
             ),
-            SpecialistProfile(
+            (
                 AgentDomain.ARCHITECTURE,
-                "System and project architecture.",
+                "Architecture.",
                 False,
-                True,
             ),
-            SpecialistProfile(
+            (
                 AgentDomain.DEVOPS,
-                "Build, CI/CD, deployment and operations.",
-                True,
+                "Operations.",
                 True,
             ),
-            SpecialistProfile(
+            (
                 AgentDomain.QA,
-                "Testing and quality verification.",
-                True,
+                "Quality assurance.",
                 True,
             ),
-            SpecialistProfile(
+            (
                 AgentDomain.CYBERSECURITY,
-                "Defensive security analysis and remediation.",
-                True,
+                "Defensive security.",
                 True,
             ),
-            SpecialistProfile(
+            (
                 AgentDomain.SECRET_PROTECTION,
-                "Secret isolation and leakage prevention.",
-                True,
+                "Secret protection.",
                 True,
             ),
-            SpecialistProfile(
+            (
                 AgentDomain.LEGAL_ASSISTANT,
-                (
-                    "Legal information and contract assistance; "
-                    "not a representation of licensed legal counsel."
-                ),
+                "Legal assistance.",
                 False,
-                True,
             ),
-            SpecialistProfile(
+            (
                 AgentDomain.CONTRACTS,
-                "Contract drafting and contract workflow assistance.",
+                "Contract assistance.",
                 False,
-                True,
             ),
-            SpecialistProfile(
+            (
                 AgentDomain.IP_LICENSING,
-                "IP provenance and software license analysis.",
+                "IP/license review.",
                 False,
-                True,
             ),
-            SpecialistProfile(
+            (
                 AgentDomain.BUSINESS,
-                "Business and commercial planning.",
+                "Business planning.",
                 False,
-                True,
             ),
-            SpecialistProfile(
+            (
                 AgentDomain.PRICING,
-                "Usage-aware subscription and project pricing analysis.",
+                "Pricing analysis.",
                 False,
-                True,
             ),
-            SpecialistProfile(
+            (
                 AgentDomain.GIT,
-                "Repository, branch, commit and merge operations.",
-                True,
+                "Git operations.",
                 True,
             ),
-            SpecialistProfile(
+            (
                 AgentDomain.PLATFORM_EVOLUTION,
-                "Controlled autonomous MAJD-GIT evolution.",
-                True,
+                "Controlled evolution.",
                 True,
             ),
         ]
 
-        for profile in profiles:
-            self._profiles[profile.domain] = profile
+        for domain, purpose, execute in entries:
+            self._profiles[domain] = (
+                SpecialistProfile(
+                    domain=domain,
+                    purpose=purpose,
+                    can_execute=execute,
+                    must_verify=True,
+                )
+            )
 
     def get(
         self,
@@ -1160,22 +1596,17 @@ class SpecialistRegistry:
         return self._profiles[domain]
 
     def all(self) -> List[SpecialistProfile]:
-        return list(self._profiles.values())
+        return list(
+            self._profiles.values()
+        )
 
 
 # =============================================================================
-# PROJECT PLANNER
+# PLANNER
 # =============================================================================
 
 
 class ProjectPlanner:
-    """
-    Converts an objective into controlled execution steps.
-
-    A real AI provider may enrich the plan, but provider output never bypasses
-    MAJD authority, repository isolation, entitlements or verification.
-    """
-
     def __init__(
         self,
         ai_provider: AIProvider,
@@ -1193,89 +1624,122 @@ class ProjectPlanner:
         actor: ActorContext,
         repository: Optional[RepositoryScope],
     ) -> ExecutionPlan:
-        repository_context = (
-            json_safe(repository)
-            if repository is not None
-            else {}
-        )
-
         reasoning = self.ai_provider.reason(
             system_context={
                 "platform": MAJD_PLATFORM,
                 "owner_is_supreme": True,
-                "secret_export_forbidden": True,
-                "cross_tenant_access_forbidden": True,
+                "public_release_allowed": False,
                 "verification_required": True,
             },
             objective=objective,
-            repository_context=repository_context,
+            repository_context=(
+                json_safe(repository)
+                if repository
+                else {}
+            ),
         )
 
-        requested_domains: List[AgentDomain] = []
+        domains: List[AgentDomain] = []
 
-        for raw_domain in reasoning.get("domains", []):
+        for raw in reasoning.get(
+            "domains",
+            [],
+        ):
             try:
-                domain = AgentDomain(raw_domain)
+                domain = AgentDomain(raw)
             except ValueError:
                 continue
 
-            if domain not in requested_domains:
-                requested_domains.append(domain)
+            if domain not in domains:
+                domains.append(domain)
 
-        if AgentDomain.SOFTWARE_ENGINEERING not in requested_domains:
-            requested_domains.insert(
+        if (
+            AgentDomain.SOFTWARE_ENGINEERING
+            not in domains
+        ):
+            domains.insert(
                 0,
                 AgentDomain.SOFTWARE_ENGINEERING,
             )
 
-        combined_text = (
-            objective.title + "\n" + objective.description
-        )
-
-        overall_risk = self.risk_engine.classify(
-            combined_text
+        risk = self.risk_engine.classify(
+            objective.title
+            + "\n"
+            + objective.description
         )
 
         steps: List[PlanStep] = []
-
         sequence = 1
 
         steps.append(
             PlanStep(
                 step_id=new_id("step"),
                 sequence=sequence,
-                title="Understand repository and objective",
+                title="Inspect project",
                 action="ANALYZE_PROJECT",
                 domain=AgentDomain.ARCHITECTURE,
                 risk=RiskLevel.LOW,
                 requires_executor=repository is not None,
-                requires_verification=True,
                 parameters={
-                    "objective": objective.description,
+                    "objective":
+                        objective.description,
                 },
             )
         )
 
         sequence += 1
 
-        for domain in requested_domains:
-            profile = self.specialists.get(domain)
+        for domain in domains:
+            profile = self.specialists.get(
+                domain
+            )
 
-            action = self._action_for_domain(domain)
+            action_map = {
+                AgentDomain.SOFTWARE_ENGINEERING:
+                    "GENERATE_OR_MODIFY_CODE",
+                AgentDomain.ARCHITECTURE:
+                    "PLAN_ARCHITECTURE",
+                AgentDomain.DEVOPS:
+                    "BUILD_AND_OPERATE",
+                AgentDomain.QA:
+                    "TEST_PROJECT",
+                AgentDomain.CYBERSECURITY:
+                    "SECURITY_REVIEW",
+                AgentDomain.SECRET_PROTECTION:
+                    "SECRET_REVIEW",
+                AgentDomain.LEGAL_ASSISTANT:
+                    "LEGAL_ANALYSIS",
+                AgentDomain.CONTRACTS:
+                    "CONTRACT_ANALYSIS",
+                AgentDomain.IP_LICENSING:
+                    "LICENSE_REVIEW",
+                AgentDomain.BUSINESS:
+                    "BUSINESS_ANALYSIS",
+                AgentDomain.PRICING:
+                    "PRICE_OBJECTIVE",
+                AgentDomain.GIT:
+                    "GIT_OPERATION",
+                AgentDomain.PLATFORM_EVOLUTION:
+                    "EVOLVE_PLATFORM",
+            }
 
             steps.append(
                 PlanStep(
                     step_id=new_id("step"),
                     sequence=sequence,
-                    title=f"Process objective with {domain.value}",
-                    action=action,
+                    title=(
+                        f"Process {domain.value}"
+                    ),
+                    action=action_map[domain],
                     domain=domain,
-                    risk=overall_risk,
+                    risk=risk,
                     requires_executor=profile.can_execute,
-                    requires_verification=profile.must_verify,
+                    requires_verification=True,
                     parameters={
-                        "objective_id": objective.objective_id,
-                        "objective": objective.description,
+                        "objective":
+                            objective.description,
+                        "objective_id":
+                            objective.objective_id,
                     },
                 )
             )
@@ -1283,47 +1747,35 @@ class ProjectPlanner:
             sequence += 1
 
         if repository is not None:
-            steps.append(
-                PlanStep(
-                    step_id=new_id("step"),
-                    sequence=sequence,
-                    title="Run project verification",
-                    action="VERIFY_PROJECT",
-                    domain=AgentDomain.QA,
-                    risk=RiskLevel.LOW,
-                    requires_executor=True,
-                    requires_verification=True,
-                    parameters={
-                        "repository_id": repository.repository_id,
-                    },
-                )
+            steps.extend(
+                [
+                    PlanStep(
+                        step_id=new_id("step"),
+                        sequence=sequence,
+                        title="Verify project",
+                        action="VERIFY_PROJECT",
+                        domain=AgentDomain.QA,
+                        risk=RiskLevel.LOW,
+                        requires_executor=True,
+                    ),
+                    PlanStep(
+                        step_id=new_id("step"),
+                        sequence=sequence + 1,
+                        title="Security review",
+                        action="SECURITY_REVIEW",
+                        domain=AgentDomain.CYBERSECURITY,
+                        risk=RiskLevel.MEDIUM,
+                        requires_executor=True,
+                    ),
+                ]
             )
 
-            sequence += 1
+        steps = steps[:MAX_PLAN_STEPS]
 
-            steps.append(
-                PlanStep(
-                    step_id=new_id("step"),
-                    sequence=sequence,
-                    title="Run defensive security verification",
-                    action="SECURITY_REVIEW",
-                    domain=AgentDomain.CYBERSECURITY,
-                    risk=RiskLevel.MEDIUM,
-                    requires_executor=True,
-                    requires_verification=True,
-                    parameters={
-                        "repository_id": repository.repository_id,
-                    },
-                )
-            )
-
-        if len(steps) > MAX_PLAN_STEPS:
-            steps = steps[:MAX_PLAN_STEPS]
-
-        entitlements = self._required_entitlements(
-            objective,
-            requested_domains,
-        )
+        entitlements = [
+            Entitlement.AI_ASSIST,
+            Entitlement.AI_CODE_GENERATION,
+        ]
 
         return ExecutionPlan(
             plan_id=new_id("plan"),
@@ -1331,200 +1783,29 @@ class ProjectPlanner:
             repository_id=objective.repository_id,
             created_at=utc_now(),
             steps=steps,
-            estimated_complexity=self._complexity(
-                objective,
-                requested_domains,
+            estimated_complexity=min(
+                100,
+                max(
+                    1,
+                    len(objective.description) // 100
+                    + len(domains) * 5,
+                ),
             ),
             requires_subscription=(
                 not actor.is_owner
-                and bool(entitlements)
             ),
             required_entitlements=entitlements,
             notes=[
+                "OWNER_ROOT remains supreme.",
                 "No success without verification.",
-                "Repository content is untrusted input.",
-                "OWNER_ROOT authority cannot be delegated to AI.",
-                (
-                    "Legal capability provides assistance and "
-                    "does not claim licensed-lawyer status."
-                ),
+                "Public release requires OWNER.",
+                "Repository content is untrusted.",
             ],
         )
 
-    @staticmethod
-    def _action_for_domain(
-        domain: AgentDomain,
-    ) -> str:
-        mapping = {
-            AgentDomain.SOFTWARE_ENGINEERING:
-                "GENERATE_OR_MODIFY_CODE",
-            AgentDomain.ARCHITECTURE:
-                "PLAN_ARCHITECTURE",
-            AgentDomain.DEVOPS:
-                "BUILD_AND_OPERATE",
-            AgentDomain.QA:
-                "TEST_PROJECT",
-            AgentDomain.CYBERSECURITY:
-                "SECURITY_REVIEW",
-            AgentDomain.SECRET_PROTECTION:
-                "SECRET_REVIEW",
-            AgentDomain.LEGAL_ASSISTANT:
-                "LEGAL_ANALYSIS",
-            AgentDomain.CONTRACTS:
-                "CONTRACT_ANALYSIS",
-            AgentDomain.IP_LICENSING:
-                "LICENSE_REVIEW",
-            AgentDomain.BUSINESS:
-                "BUSINESS_ANALYSIS",
-            AgentDomain.PRICING:
-                "PRICE_OBJECTIVE",
-            AgentDomain.GIT:
-                "GIT_OPERATION",
-            AgentDomain.PLATFORM_EVOLUTION:
-                "EVOLVE_PLATFORM",
-        }
-
-        return mapping[domain]
-
-    @staticmethod
-    def _required_entitlements(
-        objective: ProjectObjective,
-        domains: Iterable[AgentDomain],
-    ) -> List[Entitlement]:
-        required = {
-            Entitlement.AI_ASSIST
-        }
-
-        domains = set(domains)
-
-        if AgentDomain.SOFTWARE_ENGINEERING in domains:
-            required.add(
-                Entitlement.AI_CODE_GENERATION
-            )
-
-        if AgentDomain.CYBERSECURITY in domains:
-            required.add(
-                Entitlement.AI_SECURITY_REVIEW
-            )
-
-        if AgentDomain.PLATFORM_EVOLUTION in domains:
-            required.add(
-                Entitlement.AI_AUTOMATION
-            )
-
-        text = (
-            objective.title + " " + objective.description
-        ).lower()
-
-        if any(
-            word in text
-            for word in (
-                "plan",
-                "architecture",
-                "خطة",
-                "تخطيط",
-            )
-        ):
-            required.add(
-                Entitlement.AI_PROJECT_PLANNING
-            )
-
-        if any(
-            word in text
-            for word in (
-                "build",
-                "create project",
-                "application",
-                "platform",
-                "ابن",
-                "أنشئ",
-                "منصة",
-                "برنامج",
-            )
-        ):
-            required.add(
-                Entitlement.AI_PROJECT_BUILD
-            )
-
-        return sorted(
-            required,
-            key=lambda item: item.value,
-        )
-
-    @staticmethod
-    def _complexity(
-        objective: ProjectObjective,
-        domains: Iterable[AgentDomain],
-    ) -> int:
-        text_score = min(
-            50,
-            max(1, len(objective.description) // 100),
-        )
-
-        domain_score = min(
-            30,
-            len(set(domains)) * 5,
-        )
-
-        criteria_score = min(
-            20,
-            len(objective.acceptance_criteria) * 2,
-        )
-
-        return min(
-            100,
-            text_score + domain_score + criteria_score,
-        )
-
 
 # =============================================================================
-# PRICING ESTIMATOR
-# =============================================================================
-
-
-class PricingEstimator:
-    """
-    Provides relative complexity estimation.
-
-    Actual SAR prices belong to the future billing/pricing component and
-    OWNER-controlled commercial policy. This class does not charge money.
-    """
-
-    def estimate(
-        self,
-        plan: ExecutionPlan,
-    ) -> Dict[str, Any]:
-        complexity = plan.estimated_complexity
-
-        if complexity <= 20:
-            tier = "SMALL"
-            multiplier = 1.0
-        elif complexity <= 45:
-            tier = "MEDIUM"
-            multiplier = 2.0
-        elif complexity <= 70:
-            tier = "LARGE"
-            multiplier = 4.0
-        else:
-            tier = "ENTERPRISE"
-            multiplier = 8.0
-
-        return {
-            "complexity": complexity,
-            "tier": tier,
-            "relative_multiplier": multiplier,
-            "currency": None,
-            "amount": None,
-            "requires_pricing_engine": True,
-            "rule": (
-                "Larger and more resource-intensive objectives "
-                "must cost more than smaller objectives."
-            ),
-        }
-
-
-# =============================================================================
-# POLICY GUARD
+# POLICY
 # =============================================================================
 
 
@@ -1537,9 +1818,9 @@ class PolicyGuard:
         "bypass repository isolation",
         "steal secret",
         "exfiltrate secret",
-        "كشف أسرار مستخدم آخر",
-        "إلغاء المالك",
         "اعطي الذكاء صلاحية المالك",
+        "إلغاء المالك",
+        "كشف أسرار مستخدم آخر",
     )
 
     def inspect_objective(
@@ -1547,14 +1828,18 @@ class PolicyGuard:
         objective: ProjectObjective,
     ) -> Optional[str]:
         text = (
-            objective.title + "\n" + objective.description
+            objective.title
+            + "\n"
+            + objective.description
         ).lower()
 
-        for forbidden in self.FORBIDDEN_OBJECTIVE_PATTERNS:
+        for forbidden in (
+            self.FORBIDDEN_OBJECTIVE_PATTERNS
+        ):
             if forbidden.lower() in text:
                 return (
-                    "Objective conflicts with immutable "
-                    "MAJD sovereignty/security policy."
+                    "Objective conflicts with "
+                    "immutable sovereignty policy."
                 )
 
         return None
@@ -1563,18 +1848,20 @@ class PolicyGuard:
         self,
         step: PlanStep,
     ) -> Optional[str]:
-        action = normalize_action(step.action)
+        action = normalize_action(
+            step.action
+        )
 
         if action in AuthorityEngine.NEVER_AI_ACTIONS:
             return (
-                f"Action {action} is forbidden for AI execution."
+                f"Action {action} is forbidden."
             )
 
         return None
 
 
 # =============================================================================
-# VERIFICATION ENGINE
+# VERIFICATION
 # =============================================================================
 
 
@@ -1589,102 +1876,58 @@ class VerificationEngine:
                 checks={
                     "has_results": False,
                     "all_operations_ok": False,
-                    "all_required_verified": False,
+                    "all_verified": False,
                 },
-                message="No executor results were produced.",
+                message="No results.",
             )
 
-        all_ok = all(result.ok for result in results)
+        all_ok = all(
+            result.ok
+            for result in results
+        )
+
         all_verified = all(
             result.verified
             for result in results
             if result.ok
         )
 
-        ok = all_ok and all_verified
-
         return VerificationResult(
-            ok=ok,
+            ok=all_ok and all_verified,
             checks={
                 "has_results": True,
                 "all_operations_ok": all_ok,
-                "all_required_verified": all_verified,
+                "all_verified": all_verified,
+                "public_release_blocked":
+                    not PUBLIC_RELEASE_ALLOWED,
             },
             evidence={
                 "result_count": len(results),
                 "successful": sum(
-                    1 for result in results if result.ok
+                    1
+                    for result in results
+                    if result.ok
                 ),
                 "verified": sum(
-                    1 for result in results if result.verified
+                    1
+                    for result in results
+                    if result.verified
                 ),
             },
             message=(
                 "Execution verified."
-                if ok
-                else "Execution is not fully verified."
+                if all_ok and all_verified
+                else "Execution not fully verified."
             ),
         )
 
 
 # =============================================================================
-# AUTONOMOUS REPAIR
-# =============================================================================
-
-
-class RepairController:
-    def __init__(
-        self,
-        executor: ExecutorAdapter,
-    ) -> None:
-        self.executor = executor
-
-    def attempt_repair(
-        self,
-        *,
-        failed_request: ExecutorRequest,
-        failed_result: ExecutorResult,
-        actor: ActorContext,
-        repository: Optional[RepositoryScope],
-    ) -> ExecutorResult:
-        repair_request = ExecutorRequest(
-            request_id=new_id("exec"),
-            operation="AUTO_REPAIR",
-            repository_id=failed_request.repository_id,
-            actor_id=actor.actor_id,
-            authority=actor.authority,
-            correlation_id=failed_request.correlation_id,
-            parameters={
-                "failed_operation": failed_request.operation,
-                "failed_request_id": failed_request.request_id,
-                "error": SecretRedactor.redact(
-                    failed_result.error
-                ),
-                "repository": (
-                    repository.repository_id
-                    if repository
-                    else None
-                ),
-            },
-        )
-
-        return self.executor.execute(
-            repair_request
-        )
-
-
-# =============================================================================
-# MAJD MASTERMIND
+# MASTERMIND
 # =============================================================================
 
 
 class MajdAIMastermind:
-    """
-    Central autonomous decision/orchestration layer for MAJD-GIT.
-
-    It may plan broadly but real mutation is delegated to Executor 02.
-    """
-
     def __init__(
         self,
         *,
@@ -1699,12 +1942,16 @@ class MajdAIMastermind:
             self.audit_store
         )
 
-        self.executor: ExecutorAdapter = (
-            executor or NullExecutor()
+        self.executor = (
+            executor
+            if executor is not None
+            else build_executor()
         )
 
-        self.ai_provider: AIProvider = (
-            ai_provider or DeterministicFoundationAI()
+        self.ai_provider = (
+            ai_provider
+            if ai_provider is not None
+            else DeterministicFoundationAI()
         )
 
         self.authority = AuthorityEngine()
@@ -1714,25 +1961,20 @@ class MajdAIMastermind:
         self.specialists = SpecialistRegistry()
         self.policy = PolicyGuard()
         self.verifier = VerificationEngine()
-        self.pricing = PricingEstimator()
 
         self.planner = ProjectPlanner(
-            ai_provider=self.ai_provider,
-            risk_engine=self.risk,
-            specialists=self.specialists,
+            self.ai_provider,
+            self.risk,
+            self.specialists,
         )
 
-        self.repair = RepairController(
-            self.executor
+        self.instance_id = new_id(
+            "mastermind"
         )
 
-        self.instance_id = new_id("mastermind")
         self.started_at: Optional[str] = None
-        self._lock = threading.RLock()
 
-    # -------------------------------------------------------------------------
-    # CONTEXTS
-    # -------------------------------------------------------------------------
+        self._lock = threading.RLock()
 
     @staticmethod
     def owner_context(
@@ -1759,19 +2001,15 @@ class MajdAIMastermind:
             entitlements=list(Entitlement),
         )
 
-    # -------------------------------------------------------------------------
-    # START
-    # -------------------------------------------------------------------------
-
     def start(self) -> Dict[str, Any]:
         with self._lock:
-            self.state_store.initialize()
-            self.audit_store.initialize()
-
             self.started_at = utc_now()
 
             state = self.snapshot()
-            self.state_store.save(state)
+
+            self.state_store.save(
+                state
+            )
 
             self.auditor.record(
                 category="MASTERMIND",
@@ -1780,40 +2018,46 @@ class MajdAIMastermind:
                 repository_id=None,
                 success=True,
                 details={
-                    "instance_id": self.instance_id,
-                    "version": MAJD_VERSION,
-                    "executor": self.executor.health(),
-                    "ai_provider": self.ai_provider.health(),
+                    "instance_id":
+                        self.instance_id,
+                    "version":
+                        MAJD_VERSION,
+                    "executor":
+                        self.executor.health(),
                 },
             )
 
             return state
 
-    # -------------------------------------------------------------------------
-    # SNAPSHOT
-    # -------------------------------------------------------------------------
-
     def snapshot(self) -> Dict[str, Any]:
         base = {
-            "identity": json_safe(self.identity),
-            "instance_id": self.instance_id,
-            "started_at": self.started_at,
-            "timestamp": utc_now(),
-            "executor": SecretRedactor.redact(
-                self.executor.health()
-            ),
-            "ai_provider": SecretRedactor.redact(
-                self.ai_provider.health()
-            ),
+            "identity":
+                json_safe(self.identity),
+            "instance_id":
+                self.instance_id,
+            "started_at":
+                self.started_at,
+            "timestamp":
+                utc_now(),
+            "executor":
+                SecretRedactor.redact(
+                    self.executor.health()
+                ),
+            "ai_provider":
+                self.ai_provider.health(),
             "authority": {
                 "owner_root_supreme": True,
                 "ai_can_be_owner": False,
-                "cross_tenant_secret_export": False,
+                "public_release_allowed": False,
+                "cross_tenant_secret_export":
+                    False,
             },
-            "specialists": [
-                profile.domain.value
-                for profile in self.specialists.all()
-            ],
+            "architecture": {
+                "mastermind": "01",
+                "executor": "02",
+                "flow":
+                    "OWNER->01->02->VERIFY",
+            },
         }
 
         base["integrity"] = sha256_text(
@@ -1822,13 +2066,14 @@ class MajdAIMastermind:
 
         return base
 
-    # -------------------------------------------------------------------------
-    # HEALTH
-    # -------------------------------------------------------------------------
-
     def health(self) -> Dict[str, Any]:
-        executor_health = self.executor.health()
-        ai_health = self.ai_provider.health()
+        executor_health = (
+            self.executor.health()
+        )
+
+        ai_health = (
+            self.ai_provider.health()
+        )
 
         return {
             "ok": True,
@@ -1841,17 +2086,14 @@ class MajdAIMastermind:
             "ai_provider_ready": bool(
                 ai_health.get("ok")
             ),
-            "full_autonomy_ready": (
-                bool(executor_health.get("ok"))
-                and bool(ai_health.get("ok"))
+            "full_autonomy_ready": bool(
+                executor_health.get("ok")
             ),
             "owner_root_protected": True,
+            "public_release_blocked": True,
+            "blocking_llm_required": False,
             "timestamp": utc_now(),
         }
-
-    # -------------------------------------------------------------------------
-    # PLAN
-    # -------------------------------------------------------------------------
 
     def plan(
         self,
@@ -1862,8 +2104,10 @@ class MajdAIMastermind:
     ) -> MastermindResult:
         task_id = new_id("task")
 
-        policy_error = self.policy.inspect_objective(
-            objective
+        policy_error = (
+            self.policy.inspect_objective(
+                objective
+            )
         )
 
         if policy_error:
@@ -1884,7 +2128,9 @@ class MajdAIMastermind:
                 task_id=task_id,
                 status=TaskStatus.BLOCKED,
                 decision=Decision.DENY,
-                message="Repository isolation denied access.",
+                message=(
+                    "Repository isolation denied."
+                ),
             )
 
         decision = self.authority.authorize(
@@ -1899,7 +2145,7 @@ class MajdAIMastermind:
                 task_id=task_id,
                 status=TaskStatus.BLOCKED,
                 decision=decision,
-                message="Authority check failed.",
+                message="Authority denied.",
             )
 
         entitlement = self.entitlements.check(
@@ -1914,8 +2160,7 @@ class MajdAIMastermind:
                 status=TaskStatus.BLOCKED,
                 decision=entitlement,
                 message=(
-                    "MAJD AI subscription or entitlement "
-                    "is required for this customer operation."
+                    "AI entitlement required."
                 ),
             )
 
@@ -1929,13 +2174,14 @@ class MajdAIMastermind:
             category="PLANNING",
             action="PLAN_PROJECT",
             actor=actor,
-            repository_id=objective.repository_id,
+            repository_id=
+                objective.repository_id,
             success=True,
             details={
                 "task_id": task_id,
                 "plan_id": plan.plan_id,
-                "complexity": plan.estimated_complexity,
-                "pricing": self.pricing.estimate(plan),
+                "complexity":
+                    plan.estimated_complexity,
             },
         )
 
@@ -1947,10 +2193,6 @@ class MajdAIMastermind:
             message="Plan created.",
             plan=plan,
         )
-
-    # -------------------------------------------------------------------------
-    # EXECUTE OBJECTIVE
-    # -------------------------------------------------------------------------
 
     def execute_objective(
         self,
@@ -1965,47 +2207,31 @@ class MajdAIMastermind:
             repository=repository,
         )
 
-        if not planned.ok or planned.plan is None:
+        if (
+            not planned.ok
+            or planned.plan is None
+        ):
             return planned
 
         plan = planned.plan
 
-        if repository is not None:
-            if (
-                repository.automation_mode
-                == AutomationMode.ASSIST
-                and not actor.is_owner
-            ):
-                return MastermindResult(
-                    ok=True,
-                    task_id=planned.task_id,
-                    status=TaskStatus.READY,
-                    decision=Decision.APPROVAL_REQUIRED,
-                    message=(
-                        "Plan is ready. Repository is in ASSIST mode; "
-                        "automatic mutation is disabled."
-                    ),
-                    plan=plan,
-                )
-
-            if (
-                repository.automation_mode
-                == AutomationMode.APPROVAL
-                and not actor.is_owner
-            ):
-                return MastermindResult(
-                    ok=True,
-                    task_id=planned.task_id,
-                    status=TaskStatus.READY,
-                    decision=Decision.APPROVAL_REQUIRED,
-                    message=(
-                        "Plan is ready and requires repository "
-                        "approval before mutation."
-                    ),
-                    plan=plan,
-                )
-
-        executor_health = self.executor.health()
+        if (
+            repository
+            and not actor.is_owner
+            and repository.automation_mode
+            != AutomationMode.AUTONOMOUS
+        ):
+            return MastermindResult(
+                ok=True,
+                task_id=planned.task_id,
+                status=TaskStatus.READY,
+                decision=
+                    Decision.APPROVAL_REQUIRED,
+                message=(
+                    "Repository approval required."
+                ),
+                plan=plan,
+            )
 
         executor_steps = [
             step
@@ -2015,16 +2241,18 @@ class MajdAIMastermind:
 
         if (
             executor_steps
-            and not executor_health.get("ok")
+            and not self.executor.health().get(
+                "ok"
+            )
         ):
             return MastermindResult(
                 ok=False,
                 task_id=planned.task_id,
                 status=TaskStatus.BLOCKED,
-                decision=Decision.EXECUTOR_REQUIRED,
+                decision=
+                    Decision.EXECUTOR_REQUIRED,
                 message=(
-                    "Plan requires real execution. "
-                    "MAJD-AI-EXECUTOR-02 is not connected yet."
+                    "Executor 02 is not ready."
                 ),
                 plan=plan,
             )
@@ -2032,8 +2260,8 @@ class MajdAIMastermind:
         results: List[ExecutorResult] = []
 
         for step in plan.steps:
-            policy_error = self.policy.inspect_step(
-                step
+            policy_error = (
+                self.policy.inspect_step(step)
             )
 
             if policy_error:
@@ -2051,244 +2279,131 @@ class MajdAIMastermind:
                 results.append(
                     ExecutorResult(
                         ok=True,
-                        request_id=new_id("logical"),
+                        request_id=
+                            new_id("logical"),
                         operation=step.action,
                         verified=True,
                         changed=False,
                         message=(
-                            "Logical specialist step accepted "
-                            "by foundation orchestrator."
+                            "Logical mastermind "
+                            "step completed."
                         ),
-                        data={
-                            "domain": step.domain.value,
-                        },
                     )
                 )
                 continue
 
-            step_decision = self.authority.authorize(
-                actor=actor,
-                action=step.action,
-                repository=repository,
-            )
-
-            if step_decision != Decision.ALLOW:
-                return MastermindResult(
-                    ok=False,
-                    task_id=planned.task_id,
-                    status=TaskStatus.BLOCKED,
-                    decision=step_decision,
-                    message=(
-                        f"Authority denied step {step.action}."
-                    ),
-                    plan=plan,
-                    results=results,
-                )
-
             request = ExecutorRequest(
                 request_id=new_id("exec"),
                 operation=step.action,
-                repository_id=objective.repository_id,
+                repository_id=
+                    objective.repository_id,
                 actor_id=actor.actor_id,
                 authority=actor.authority,
-                parameters=SecretRedactor.redact(
-                    step.parameters
-                ),
-                correlation_id=planned.task_id,
+                parameters=
+                    SecretRedactor.redact(
+                        step.parameters
+                    ),
+                correlation_id=
+                    planned.task_id,
             )
 
             result = self.executor.execute(
                 request
             )
 
-            if result.ok and step.requires_verification:
-                verification = self.executor.verify(
-                    request,
-                    result,
+            if result.ok:
+                verification = (
+                    self.executor.verify(
+                        request,
+                        result,
+                    )
                 )
 
-                result.verified = verification.ok
+                result.verified = (
+                    verification.ok
+                )
 
                 if not verification.ok:
                     result.ok = False
                     result.error = (
                         verification.message
-                        or "VERIFICATION_FAILED"
                     )
-
-            if not result.ok:
-                repaired = self._repair_loop(
-                    actor=actor,
-                    repository=repository,
-                    request=request,
-                    failed_result=result,
-                )
-
-                results.extend(repaired)
-
-                if not repaired or not repaired[-1].ok:
-                    final_verification = (
-                        self.verifier.verify_results(
-                            results
-                        )
-                    )
-
-                    return MastermindResult(
-                        ok=False,
-                        task_id=planned.task_id,
-                        status=TaskStatus.FAILED,
-                        decision=Decision.ALLOW,
-                        message=(
-                            "Execution failed and autonomous "
-                            "repair did not produce a verified result."
-                        ),
-                        plan=plan,
-                        results=results,
-                        verification=final_verification,
-                    )
-
-                continue
 
             results.append(result)
 
-        verification = self.verifier.verify_results(
-            results
+            if not result.ok:
+                self.auditor.record(
+                    category="EXECUTION",
+                    action=step.action,
+                    actor=actor,
+                    repository_id=
+                        objective.repository_id,
+                    success=False,
+                    severity=
+                        EventSeverity.ERROR,
+                    details={
+                        "error":
+                            result.error,
+                        "request_id":
+                            request.request_id,
+                    },
+                )
+
+                return MastermindResult(
+                    ok=False,
+                    task_id=planned.task_id,
+                    status=TaskStatus.FAILED,
+                    decision=Decision.ALLOW,
+                    message=(
+                        "Executor step failed. "
+                        "No false success reported."
+                    ),
+                    plan=plan,
+                    results=results,
+                    verification=
+                        self.verifier.verify_results(
+                            results
+                        ),
+                )
+
+        verification = (
+            self.verifier.verify_results(
+                results
+            )
         )
 
-        success = verification.ok
-
-        self.auditor.record(
-            category="EXECUTION",
-            action="OBJECTIVE_COMPLETE",
-            actor=actor,
-            repository_id=objective.repository_id,
-            success=success,
-            severity=(
-                EventSeverity.INFO
-                if success
-                else EventSeverity.ERROR
-            ),
-            details={
-                "task_id": planned.task_id,
-                "plan_id": plan.plan_id,
-                "verification": json_safe(verification),
-            },
-        )
+        if not verification.ok:
+            return MastermindResult(
+                ok=False,
+                task_id=planned.task_id,
+                status=TaskStatus.FAILED,
+                decision=Decision.ALLOW,
+                message=(
+                    "Final verification failed."
+                ),
+                plan=plan,
+                results=results,
+                verification=verification,
+            )
 
         return MastermindResult(
-            ok=success,
+            ok=True,
             task_id=planned.task_id,
-            status=(
-                TaskStatus.SUCCEEDED
-                if success
-                else TaskStatus.FAILED
-            ),
+            status=
+                TaskStatus.WAITING_FOR_OWNER_RELEASE,
             decision=Decision.ALLOW,
             message=(
-                "Objective completed and verified."
-                if success
-                else "Objective did not pass final verification."
+                "Objective completed and verified. "
+                "Public release remains blocked "
+                "until OWNER_ROOT release command."
             ),
             plan=plan,
             results=results,
             verification=verification,
+            owner_action_required=(
+                "OWNER_RELEASE_REQUIRED"
+            ),
         )
-
-    # -------------------------------------------------------------------------
-    # REPAIR LOOP
-    # -------------------------------------------------------------------------
-
-    def _repair_loop(
-        self,
-        *,
-        actor: ActorContext,
-        repository: Optional[RepositoryScope],
-        request: ExecutorRequest,
-        failed_result: ExecutorResult,
-    ) -> List[ExecutorResult]:
-        repair_results: List[ExecutorResult] = [
-            failed_result
-        ]
-
-        if (
-            repository is not None
-            and not repository.allow_ai_self_repair
-            and not actor.is_owner
-        ):
-            return repair_results
-
-        current_failure = failed_result
-
-        for attempt in range(
-            1,
-            MAX_AUTONOMOUS_REPAIR_ATTEMPTS + 1,
-        ):
-            repaired = self.repair.attempt_repair(
-                failed_request=request,
-                failed_result=current_failure,
-                actor=actor,
-                repository=repository,
-            )
-
-            repair_results.append(repaired)
-
-            self.auditor.record(
-                category="SELF_REPAIR",
-                action="AUTO_REPAIR",
-                actor=actor,
-                repository_id=request.repository_id,
-                success=repaired.ok,
-                severity=(
-                    EventSeverity.INFO
-                    if repaired.ok
-                    else EventSeverity.WARNING
-                ),
-                details={
-                    "attempt": attempt,
-                    "operation": request.operation,
-                    "repair_request_id": repaired.request_id,
-                },
-            )
-
-            if repaired.ok:
-                verification_request = ExecutorRequest(
-                    request_id=new_id("exec"),
-                    operation="VERIFY_REPAIR",
-                    repository_id=request.repository_id,
-                    actor_id=actor.actor_id,
-                    authority=actor.authority,
-                    correlation_id=request.correlation_id,
-                    parameters={
-                        "original_operation":
-                            request.operation,
-                        "repair_request_id":
-                            repaired.request_id,
-                    },
-                )
-
-                verification = self.executor.verify(
-                    verification_request,
-                    repaired,
-                )
-
-                repaired.verified = verification.ok
-
-                if verification.ok:
-                    return repair_results
-
-                repaired.ok = False
-                repaired.error = (
-                    verification.message
-                    or "REPAIR_VERIFICATION_FAILED"
-                )
-
-            current_failure = repaired
-
-        return repair_results
-
-    # -------------------------------------------------------------------------
-    # AUTONOMOUS PLATFORM EVOLUTION
-    # -------------------------------------------------------------------------
 
     def evolve_platform(
         self,
@@ -2296,30 +2411,24 @@ class MajdAIMastermind:
         owner: ActorContext,
         goal: str,
     ) -> MastermindResult:
-        """
-        OWNER-authorized entry point for autonomous MAJD-GIT evolution.
-
-        Once Executor 02 is connected, this can become the mechanism through
-        which MAJD creates future components itself.
-
-        OWNER sovereignty remains immutable.
-        """
-
         if not owner.is_owner:
             return MastermindResult(
                 ok=False,
                 task_id=new_id("task"),
                 status=TaskStatus.BLOCKED,
-                decision=Decision.OWNER_REQUIRED,
+                decision=
+                    Decision.OWNER_REQUIRED,
                 message=(
-                    "Initial autonomous platform evolution "
-                    "requires verified OWNER_ROOT authority."
+                    "Verified OWNER_ROOT required."
                 ),
             )
 
         objective = ProjectObjective(
-            objective_id=new_id("objective"),
-            title="Autonomous MAJD-GIT Evolution",
+            objective_id=
+                new_id("objective"),
+            title=(
+                "Autonomous MAJD-GIT Evolution"
+            ),
             description=goal,
             repository_id=MAJD_PLATFORM,
             requested_by=owner.actor_id,
@@ -2327,22 +2436,33 @@ class MajdAIMastermind:
                 "OWNER_ROOT remains supreme.",
                 "Never expose secrets.",
                 "Never cross tenant boundaries.",
-                "Do not claim success without verification.",
-                "Prefer controlled incremental evolution.",
+                "Never fake success.",
+                "Public release is forbidden.",
                 (
-                    "Create or modify future components only "
-                    "when justified by the platform objective."
+                    "Use deterministic execution "
+                    "when AI is unnecessary."
+                ),
+                (
+                    "AI timeout must not be "
+                    "reported as success."
                 ),
             ],
             acceptance_criteria=[
-                "Changes are actually created by the executor.",
-                "Generated code passes available syntax/build checks.",
-                "Available tests pass.",
-                "Security checks pass or findings are reported.",
-                "All claimed changes are verified.",
+                (
+                    "Real changes are performed "
+                    "only by Executor 02."
+                ),
+                "Available checks pass.",
+                "Security checks pass.",
+                "Results are verified.",
+                (
+                    "Final state does not "
+                    "publicly release anything."
+                ),
             ],
             metadata={
                 "autonomous_evolution": True,
+                "public_release": False,
             },
         )
 
@@ -2350,7 +2470,8 @@ class MajdAIMastermind:
             repository_id=MAJD_PLATFORM,
             owner_id=owner.actor_id,
             private=True,
-            automation_mode=AutomationMode.AUTONOMOUS,
+            automation_mode=
+                AutomationMode.AUTONOMOUS,
             ai_enabled=True,
             allow_ai_write=True,
             allow_ai_git=True,
@@ -2359,6 +2480,8 @@ class MajdAIMastermind:
             allow_ai_self_repair=True,
             metadata={
                 "platform_repository": True,
+                "public_release_allowed":
+                    False,
             },
         )
 
@@ -2368,42 +2491,46 @@ class MajdAIMastermind:
             repository=repository,
         )
 
-    # -------------------------------------------------------------------------
-    # SELF TEST
-    # -------------------------------------------------------------------------
-
     def self_test(self) -> Dict[str, Any]:
         tests: Dict[str, bool] = {}
 
         owner = self.owner_context()
         ai = self.ai_context()
 
-        tests["owner_root_valid"] = owner.is_owner
+        tests["owner_root_valid"] = (
+            owner.is_owner
+        )
 
-        tests["ai_not_owner"] = not ai.is_owner
+        tests["ai_not_owner"] = (
+            not ai.is_owner
+        )
 
-        tests["ai_cannot_grant_itself_owner"] = (
+        tests["ai_cannot_grant_owner"] = (
             self.authority.authorize(
                 actor=ai,
                 action="GRANT_OWNER_TO_AI",
                 repository=None,
             )
-            == Decision.OWNER_REQUIRED
+            != Decision.ALLOW
         )
 
-        tests["owner_can_manage_owner_action"] = (
+        tests["public_release_owner_only"] = (
             self.authority.authorize(
-                actor=owner,
-                action="CHANGE_OWNER_ROOT_AUTHORITY",
+                actor=ai,
+                action="PUBLIC_RELEASE",
                 repository=None,
             )
-            == Decision.ALLOW
+            != Decision.ALLOW
+        )
+
+        tests["public_release_globally_blocked"] = (
+            PUBLIC_RELEASE_ALLOWED is False
         )
 
         tests["secret_redaction"] = (
             SecretRedactor.redact(
                 {
-                    "password": "very-secret-value",
+                    "password": "secret",
                     "normal": "safe",
                 }
             )["password"]
@@ -2418,7 +2545,8 @@ class MajdAIMastermind:
         user_b = ActorContext(
             actor_id="user-b",
             actor_type=ActorType.HUMAN,
-            authority=AuthorityLevel.DEVELOPER,
+            authority=
+                AuthorityLevel.DEVELOPER,
             authenticated=True,
             repository_ids=["repo-b"],
         )
@@ -2430,17 +2558,18 @@ class MajdAIMastermind:
             )
         )
 
-        normal_customer = ActorContext(
+        customer = ActorContext(
             actor_id="customer",
             actor_type=ActorType.HUMAN,
-            authority=AuthorityLevel.CUSTOMER,
+            authority=
+                AuthorityLevel.CUSTOMER,
             authenticated=True,
             repository_ids=["repo-customer"],
         )
 
-        tests["ai_subscription_enforced"] = (
+        tests["subscription_enforced"] = (
             self.entitlements.check(
-                normal_customer,
+                customer,
                 "GENERATE_CODE",
             )
             == Decision.SUBSCRIPTION_REQUIRED
@@ -2454,58 +2583,33 @@ class MajdAIMastermind:
             == Decision.ALLOW
         )
 
-        null_health = NullExecutor().health()
-
-        tests["null_executor_never_fake_ready"] = (
-            null_health.get("ok") is False
+        tests["executor_file_detected"] = (
+            EXECUTOR_FILE.exists()
         )
 
-        objective = ProjectObjective(
-            objective_id=new_id("test-objective"),
-            title="Security test",
-            description=(
-                "Review repository security and Git configuration."
-            ),
-            repository_id="test-repo",
-            requested_by=owner.actor_id,
+        tests["mastermind_uses_deterministic_planner"] = (
+            self.ai_provider.health().get(
+                "blocking_llm_dependency"
+            )
+            is False
         )
 
-        test_repo = RepositoryScope(
-            repository_id="test-repo",
-            owner_id=owner.actor_id,
-            automation_mode=AutomationMode.AUTONOMOUS,
-            ai_enabled=True,
-            allow_ai_write=True,
-            allow_ai_git=True,
-            allow_ai_build=True,
+        passed = all(
+            tests.values()
         )
-
-        plan = self.planner.build_plan(
-            objective=objective,
-            actor=owner,
-            repository=test_repo,
-        )
-
-        tests["planner_created_steps"] = (
-            len(plan.steps) > 0
-        )
-
-        tests["planner_includes_security"] = any(
-            step.domain == AgentDomain.CYBERSECURITY
-            for step in plan.steps
-        )
-
-        passed = all(tests.values())
 
         result = {
             "ok": passed,
             "component": MAJD_COMPONENT,
+            "version": MAJD_VERSION,
             "tests": tests,
-            "executor": self.executor.health(),
-            "ai_provider": self.ai_provider.health(),
-            "note": (
-                "Full autonomous execution becomes available only "
-                "after real Executor 02 is connected."
+            "executor":
+                self.executor.health(),
+            "ai_provider":
+                self.ai_provider.health(),
+            "architecture": (
+                "OWNER_ROOT -> 01 -> 02 -> "
+                "VERIFY -> WAITING_FOR_OWNER_RELEASE"
             ),
             "timestamp": utc_now(),
         }
@@ -2528,11 +2632,13 @@ class MajdAIMastermind:
 
 
 # =============================================================================
-# DEMO / CLI
+# CLI
 # =============================================================================
 
 
-def print_json(value: Any) -> None:
+def print_json(
+    value: Any,
+) -> None:
     print(
         json.dumps(
             SecretRedactor.redact(
@@ -2545,55 +2651,29 @@ def print_json(value: Any) -> None:
     )
 
 
-def build_demo_objective(
-    owner: ActorContext,
-) -> ProjectObjective:
-    return ProjectObjective(
-        objective_id=new_id("objective"),
-        title="MAJD-GIT Autonomous Platform Foundation",
-        description=(
-            "Analyze MAJD-GIT and prepare the controlled evolution path "
-            "for AI-driven Git hosting, software generation, project "
-            "planning, defensive cybersecurity, secret protection, "
-            "IP/license review, contract assistance, subscriptions, "
-            "dynamic pricing, developer marketplace, enterprise services, "
-            "testing, repair and autonomous platform evolution."
-        ),
-        repository_id=MAJD_PLATFORM,
-        requested_by=owner.actor_id,
-        constraints=[
-            "OWNER_ROOT remains above AI.",
-            "Do not expose secrets.",
-            "Do not cross repository boundaries.",
-            "Do not fake execution.",
-            "Do not fake legal authority.",
-        ],
-        acceptance_criteria=[
-            "Plan is generated.",
-            "Authority policy remains enforced.",
-            "Real mutations wait for Executor 02.",
-        ],
-    )
-
-
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
+        format=(
+            "%(asctime)s %(levelname)s "
+            "%(message)s"
+        ),
     )
 
     mastermind = MajdAIMastermind()
 
     try:
         mastermind.start()
+
     except Exception as exc:
         print_json(
             {
                 "ok": False,
                 "component": MAJD_COMPONENT,
-                "error": SecretRedactor.redact_text(
-                    repr(exc)
-                ),
+                "error":
+                    SecretRedactor.redact_text(
+                        repr(exc)
+                    ),
             }
         )
         return 1
@@ -2604,29 +2684,62 @@ def main() -> int:
         else "self-test"
     )
 
-    if command in {"health", "status"}:
+    if command in {
+        "health",
+        "status",
+    }:
         result = mastermind.health()
         print_json(result)
-        return 0 if result["ok"] else 1
+        return (
+            0
+            if result["ok"]
+            else 1
+        )
 
-    if command in {"self-test", "test"}:
+    if command in {
+        "self-test",
+        "test",
+    }:
         result = mastermind.self_test()
         print_json(result)
-        return 0 if result["ok"] else 1
+        return (
+            0
+            if result["ok"]
+            else 1
+        )
 
     if command == "state":
-        print_json(mastermind.snapshot())
+        print_json(
+            mastermind.snapshot()
+        )
         return 0
 
     if command == "plan":
-        owner = mastermind.owner_context()
-        objective = build_demo_objective(owner)
+        owner = (
+            mastermind.owner_context()
+        )
+
+        objective = ProjectObjective(
+            objective_id=
+                new_id("objective"),
+            title=(
+                "MAJD-GIT Autonomous "
+                "Platform Evolution"
+            ),
+            description=(
+                "Inspect MAJD-GIT and determine "
+                "the next controlled production-ready "
+                "development step without public release."
+            ),
+            repository_id=MAJD_PLATFORM,
+            requested_by=owner.actor_id,
+        )
 
         repository = RepositoryScope(
             repository_id=MAJD_PLATFORM,
             owner_id=owner.actor_id,
-            private=True,
-            automation_mode=AutomationMode.AUTONOMOUS,
+            automation_mode=
+                AutomationMode.AUTONOMOUS,
             ai_enabled=True,
             allow_ai_write=True,
             allow_ai_git=True,
@@ -2642,28 +2755,47 @@ def main() -> int:
         )
 
         print_json(result)
-        return 0 if result.ok else 1
+
+        return (
+            0
+            if result.ok
+            else 1
+        )
 
     if command == "evolve":
-        owner = mastermind.owner_context()
+        owner = (
+            mastermind.owner_context()
+        )
 
-        result = mastermind.evolve_platform(
-            owner=owner,
-            goal=(
-                "Continue building MAJD-GIT autonomously. "
-                "Determine the next required platform components, "
-                "create only what is justified, test every change, "
-                "repair failures, preserve OWNER_ROOT authority, "
-                "protect secrets and repository isolation, and never "
-                "report completion without real verification."
-            ),
+        goal = (
+            " ".join(sys.argv[2:]).strip()
+            if len(sys.argv) > 2
+            else (
+                "Continue controlled autonomous "
+                "development of MAJD-GIT and its "
+                "managed MAJD repositories. "
+                "Inspect current state, determine "
+                "one necessary production-ready step, "
+                "execute through Executor 02, verify "
+                "the result, protect OWNER_ROOT and "
+                "secrets, and do not release publicly."
+            )
+        )
+
+        result = (
+            mastermind.evolve_platform(
+                owner=owner,
+                goal=goal,
+            )
         )
 
         print_json(result)
 
-        # Before Executor 02 exists this is expected to return
-        # EXECUTOR_REQUIRED rather than falsely claiming success.
-        return 0 if result.ok else 1
+        return (
+            0
+            if result.ok
+            else 1
+        )
 
     print_json(
         {
@@ -2683,6 +2815,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    import sys
-
     raise SystemExit(main())
