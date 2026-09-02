@@ -23,6 +23,41 @@ def service_state():
     except Exception:
         return "unknown"
 
+def git_repositories():
+    result = {}
+    managed = ROOT / "managed"
+    if not managed.exists():
+        return result
+    for repo in sorted(managed.iterdir()):
+        if not repo.is_dir() or not (repo / ".git").exists():
+            continue
+        try:
+            branch = subprocess.check_output(
+                ["git", "-C", str(repo), "branch", "--show-current"],
+                text=True, timeout=3
+            ).strip() or "DETACHED"
+            head = subprocess.check_output(
+                ["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
+                text=True, timeout=3
+            ).strip()
+            message = subprocess.check_output(
+                ["git", "-C", str(repo), "log", "-1", "--pretty=%s"],
+                text=True, timeout=3
+            ).strip()
+            dirty = bool(subprocess.check_output(
+                ["git", "-C", str(repo), "status", "--porcelain"],
+                text=True, timeout=3
+            ).strip())
+            result[repo.name] = {
+                "branch": branch,
+                "head": head,
+                "last_commit": message,
+                "dirty": dirty
+            }
+        except Exception as e:
+            result[repo.name] = {"error": type(e).__name__}
+    return result
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/api/status":
@@ -33,7 +68,8 @@ class Handler(BaseHTTPRequestHandler):
                 "service": service_state(),
                 "public_release": "BLOCKED_UNTIL_OWNER_RELEASE",
                 "last_repository": scheduler.get("last_repository"),
-                "repositories": state
+                "repositories": state,
+                "git": git_repositories()
             }, ensure_ascii=False).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -91,8 +127,13 @@ async function refresh(){
   Object.entries(d.repositories||{}).forEach(([name,x])=>{
    const el=document.createElement('div');
    el.className='repo';
-   el.innerHTML='<h3>'+name+'</h3><div class="label">الحالة</div><div class="state">'+
-     (x.state||'WAITING')+'</div><small>آخر تحديث: <span dir="ltr">'+(x.updated_at ? new Date(x.updated_at).toLocaleString('ar-SA') : '—')+'</span></small>';
+   const g=(d.git||{})[name]||{};
+   el.innerHTML='<h3>'+name+'</h3>'+
+     '<div class="label">الحالة</div><div class="state">'+(x.state||'WAITING')+'</div>'+
+     '<small>الفرع: <span dir="ltr">'+(g.branch||'—')+'</span></small>'+
+     '<small>آخر Commit: <span dir="ltr">'+(g.head||'—')+'</span></small>'+
+     '<small>Git: '+(g.dirty ? 'تغييرات غير محفوظة' : 'نظيف')+'</small>'+
+     '<small>آخر تحديث: <span dir="ltr">'+(x.updated_at ? new Date(x.updated_at).toLocaleString('ar-SA') : '—')+'</span></small>';
    repos.appendChild(el);
   });
  }catch(e){}
