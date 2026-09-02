@@ -111,7 +111,40 @@ def git_repositories():
     return result
 
 class Handler(BaseHTTPRequestHandler):
+    def _owner_service_direct(self, action):
+        allowed = {
+            "start": ["systemctl", "start", "majd-git-autonomous.service"],
+            "restart": ["systemctl", "restart", "majd-git-autonomous.service"],
+            "stop": ["systemctl", "stop", "majd-git-autonomous.service"],
+        }
+        if action not in allowed:
+            self.send_error(403)
+            return
+
+        cp = subprocess.run(
+            allowed[action],
+            capture_output=True,
+            text=True,
+            timeout=15
+        )
+
+        if cp.returncode != 0:
+            self.send_error(500)
+            return
+
+        self.send_response(303)
+        self.send_header("Location", "/")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
     def do_POST(self):
+        if self.path == "/owner/service/start":
+            return self._owner_service_direct("start")
+        if self.path == "/owner/service/restart":
+            return self._owner_service_direct("restart")
+        if self.path == "/owner/service/stop":
+            return self._owner_service_direct("stop")
+
         try:
             if self.headers.get("X-MAJD-Owner-Control") != "1":
                 raise PermissionError("owner control header required")
@@ -368,11 +401,19 @@ footer{text-align:center;color:#66738c;padding:20px}
 </div>
 <div id="ownerControls" class="card" style="margin:18px 0">
 <h3>تحكم المالك</h3>
-<p>التحكم بالخدمة التلقائية فقط — الإطلاق العام يبقى مقفولًا.</p>
-<button type="button" onclick="ownerService('start');return false;">تشغيل الأتمتة</button>
-<button type="button" onclick="ownerService('restart');return false;">إعادة التشغيل</button>
-<button type="button" onclick="ownerService('stop');return false;">إيقاف الأتمتة</button>
-<div id="ownerResult" style="margin-top:12px"></div>
+<p>تحكم مباشر بالخدمة التلقائية — الإطلاق العام يبقى مقفولًا.</p>
+
+<form method="POST" action="/owner/service/start" style="display:inline">
+<button type="submit">تشغيل الأتمتة</button>
+</form>
+
+<form method="POST" action="/owner/service/restart" style="display:inline">
+<button type="submit">إعادة التشغيل</button>
+</form>
+
+<form method="POST" action="/owner/service/stop" style="display:inline">
+<button type="submit">إيقاف الأتمتة</button>
+</form>
 </div>
 <div id="repos" class="grid"></div>
 </main>
