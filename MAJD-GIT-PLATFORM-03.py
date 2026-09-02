@@ -183,6 +183,35 @@ class Handler(BaseHTTPRequestHandler):
                         "public_release": "BLOCKED_UNTIL_OWNER_RELEASE"
                     }
 
+                elif action == "develop":
+                    objective = (
+                        f"Work only on managed repository {name}. "
+                        "Inspect its current state, perform one bounded necessary production-ready improvement, "
+                        "verify the result, protect OWNER_ROOT and secrets, and do not release publicly."
+                    )
+
+                    cp = subprocess.run(
+                        [
+                            "/usr/bin/python3",
+                            str(ROOT / "MAJD-AI-MASTERMIND-01.py"),
+                            "objective",
+                            objective
+                        ],
+                        cwd=str(ROOT),
+                        capture_output=True,
+                        text=True,
+                        timeout=180
+                    )
+
+                    payload = {
+                        "ok": cp.returncode == 0,
+                        "repository": name,
+                        "action": "develop",
+                        "returncode": cp.returncode,
+                        "result": (cp.stdout or cp.stderr)[-1500:],
+                        "public_release": "BLOCKED_UNTIL_OWNER_RELEASE"
+                    }
+
                 else:
                     raise ValueError("repository action denied")
 
@@ -305,7 +334,8 @@ async function refresh(){
      '<small>Git: '+(g.dirty ? 'تغييرات غير محفوظة' : 'نظيف')+'</small>'+
      '<div style="margin-top:10px">'+
      '<button onclick="ownerRepo(\''+name+'\',\'verify\')">تحقق Git</button> '+
-     '<button onclick="ownerRepo(\''+name+'\',\'sync\')">مزامنة آمنة</button>'+
+     '<button onclick="ownerRepo(\''+name+'\',\'sync\')">مزامنة آمنة</button> '+
+     '<button onclick="ownerRepo(\''+name+'\',\'develop\')">تشغيل دورة تطوير</button>'+
      '</div>'+
      '<small id="repoResult-'+name+'" style="display:block;margin-top:8px"></small>'+
      '<small>آخر تحديث: <span dir="ltr">'+(x.updated_at ? new Date(x.updated_at).toLocaleString('ar-SA') : '—')+'</span></small>';
@@ -368,8 +398,10 @@ async function ownerRepo(name,action){
     if(action==='verify'){
       out.textContent='تم التحقق — '+d.branch+' / '+d.head+
         (d.dirty ? ' / توجد تغييرات' : ' / Git نظيف');
-    }else{
+    }else if(action==='sync'){
       out.textContent='تمت المزامنة — '+d.head;
+    }else if(action==='develop'){
+      out.textContent=d.ok ? 'انتهت دورة التطوير المحدودة' : 'فشلت دورة التطوير';
     }
 
     setTimeout(load,800);
