@@ -59,6 +59,64 @@ def git_repositories():
     return result
 
 class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        if self.path != "/api/owner/service":
+            self.send_error(404)
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length < 1 or length > 1024:
+                raise ValueError("invalid request size")
+
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            action = str(body.get("action", "")).strip().lower()
+
+            allowed = {
+                "start": ["systemctl", "start", "majd-git-autonomous.service"],
+                "stop": ["systemctl", "stop", "majd-git-autonomous.service"],
+                "restart": ["systemctl", "restart", "majd-git-autonomous.service"],
+            }
+
+            if action not in allowed:
+                raise ValueError("action denied")
+
+            cp = subprocess.run(
+                allowed[action],
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+
+            payload = {
+                "ok": cp.returncode == 0,
+                "action": action,
+                "service": service_state(),
+                "public_release": "BLOCKED_UNTIL_OWNER_RELEASE"
+            }
+
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(200 if payload["ok"] else 500)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        except Exception as exc:
+            data = json.dumps({
+                "ok": False,
+                "error": str(exc),
+                "public_release": "BLOCKED_UNTIL_OWNER_RELEASE"
+            }, ensure_ascii=False).encode("utf-8")
+
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
     def do_GET(self):
         if self.path == "/api/status":
             state = load_json(STATE)
@@ -113,6 +171,14 @@ footer{text-align:center;color:#66738c;padding:20px}
 <div class="card"><div class="label">Git نظيف</div><div id="cleanCount" class="value">...</div></div>
 <div class="card"><div class="label">AI مؤجل</div><div id="deferredCount" class="value">...</div></div>
 </div>
+<div id="ownerControls" class="card" style="margin:18px 0">
+<h3>تحكم المالك</h3>
+<p>التحكم بالخدمة التلقائية فقط — الإطلاق العام يبقى مقفولًا.</p>
+<button onclick="ownerService('start')">تشغيل الأتمتة</button>
+<button onclick="ownerService('restart')">إعادة التشغيل</button>
+<button onclick="ownerService('stop')">إيقاف الأتمتة</button>
+<div id="ownerResult" style="margin-top:12px"></div>
+</div>
 <div id="repos" class="grid"></div>
 </main>
 <footer>OWNER ROOT • MAJD-GIT</footer>
@@ -140,6 +206,7 @@ async function refresh(){
      '<div class="label">الحالة</div><div class="state">'+(x.state||'WAITING')+'</div>'+
      '<small>الفرع: <span dir="ltr">'+(g.branch||'—')+'</span></small>'+
      '<small>آخر Commit: <span dir="ltr">'+(g.head||'—')+'</span></small>'+
+     '<small>الرسالة: '+(g.last_commit||'—')+'</small>'+
      '<small>Git: '+(g.dirty ? 'تغييرات غير محفوظة' : 'نظيف')+'</small>'+
      '<small>آخر تحديث: <span dir="ltr">'+(x.updated_at ? new Date(x.updated_at).toLocaleString('ar-SA') : '—')+'</span></small>';
    repos.appendChild(el);
@@ -147,6 +214,32 @@ async function refresh(){
  }catch(e){}
 }
 refresh();setInterval(refresh,5000);
+
+async function ownerService(action){
+  const out=document.getElementById('ownerResult');
+  out.textContent='جارٍ التنفيذ...';
+
+  try{
+    const r=await fetch('/api/owner/service',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({action})
+    });
+
+    const d=await r.json();
+
+    if(!r.ok || !d.ok){
+      out.textContent='فشل التنفيذ';
+      return;
+    }
+
+    out.textContent='تم التنفيذ — الخدمة: '+d.service;
+    setTimeout(load,800);
+  }catch(e){
+    out.textContent='تعذر تنفيذ الأمر';
+  }
+}
+
 </script>
 </body></html>"""
         body = html.encode()
