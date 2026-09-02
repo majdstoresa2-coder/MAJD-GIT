@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import subprocess
+import urllib.parse
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -132,8 +133,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(500)
             return
 
+        message = {
+            "start": "تم تشغيل الأتمتة",
+            "restart": "تمت إعادة تشغيل الأتمتة",
+            "stop": "تم إيقاف الأتمتة",
+        }[action]
+
         self.send_response(303)
-        self.send_header("Location", "/")
+        self.send_header("Location", "/?msg=" + urllib.parse.quote(message))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
 
@@ -388,6 +395,16 @@ footer{text-align:center;color:#66738c;padding:20px}
 </style>
 </head>
 <body>
+<div id="ownerMessage" style="
+display:none;
+margin:16px 0;
+padding:14px 16px;
+border-radius:12px;
+background:#183326;
+border:1px solid #2f7d52;
+font-weight:700;
+"></div>
+
 <header><h1>MAJD-GIT</h1><div class="sub">لوحة إدارة المنصات والذكاء الاصطناعي</div></header>
 <main>
 <div class="top">
@@ -553,6 +570,22 @@ async function ownerService(action){
     if(out) out.textContent='تعذر الاتصال بالخدمة';
   }
 }
+
+
+(function(){
+  const params=new URLSearchParams(window.location.search);
+  const msg=params.get('msg');
+  const box=document.getElementById('ownerMessage');
+
+  if(msg && box){
+    box.textContent=msg;
+    box.style.display='block';
+
+    if(history.replaceState){
+      history.replaceState({},'',window.location.pathname);
+    }
+  }
+})();
 
 </script>
 </body></html>"""
